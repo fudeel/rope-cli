@@ -1,5 +1,3 @@
-# File: rope_cli.py
-#!/usr/bin/env python
 """
 Rope CLI - Command line interface for Rope deepfake face swapping
 """
@@ -99,7 +97,9 @@ class RopeCLI:
             try:
                 kpss = self.models.run_detect(img_tensor, max_num=1)
 
-                if kpss and len(kpss) > 0:
+                # FIX: The original check 'if kpss and ...' fails because the boolean value of a
+                # numpy array is ambiguous. We check for the existence and size of the array instead.
+                if hasattr(kpss, 'size') and kpss.size > 0:
                     # Get face embedding using the same method as GUI.py
                     face_emb, cropped_img = self.models.run_recognize(img_tensor, kpss[0])
 
@@ -351,6 +351,7 @@ class RopeCLI:
         # Use ffmpeg to add audio from original video
         audio_args = [
             "ffmpeg",
+            "-y", # Overwrite output file if it exists
             "-i", str(temp_file),
             "-i", str(input_video),
             "-c:v", "libx264",
