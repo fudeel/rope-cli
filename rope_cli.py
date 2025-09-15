@@ -1,50 +1,80 @@
+# File: rope_cli.py
+#!/usr/bin/env python
+"""
+Rope CLI - Command line interface for Rope deepfake face swapping
+"""
+
 import os
 import sys
+import time
 import argparse
-import json
-import cv2
+import subprocess
+from pathlib import Path
 import numpy as np
 import torch
+import cv2
+from math import ceil
 import torchvision
-from torchvision.transforms import v2
-from pathlib import Path
-import time
-import subprocess
-from math import floor
-
-# Import Rope modules
-import rope.Models as Models
-import rope.VideoManager as VM
-
 torchvision.disable_beta_transforms_warning()
+from torchvision.transforms import v2
+
+# Add parent directory to path for imports
+sys.path.append(os.path.dirname(os.path.abspath(__file__)))
+
+from rope.VideoManager import VideoManager
+from rope.Models import Models
+
+# Define device for CUDA operations
+device = 'cuda' if torch.cuda.is_available() else 'cpu'
 
 
 class RopeCLI:
-    """Command-line interface for Rope deepfake processing"""
-
     def __init__(self):
-        self.models = Models.Models()
-        self.video_manager = VM.VideoManager(self.models)
+        """Initialize the Rope CLI with VideoManager"""
+        # Create Models instance first
+        self.models = Models()
+        # Pass models to VideoManager
+        self.video_manager = VideoManager(self.models)
         self.source_embeddings = []
+        self.source_images = []
         self.found_faces = []
+        print("Initializing Rope CLI...")
+
+    def findCosineDistance(self, vector1, vector2):
+        """
+        Calculate cosine similarity between two vectors
+        Same method used in GUI.py and VideoManager.py
+        """
+        vec1 = vector1.flatten()
+        vec2 = vector2.flatten()
+
+        dot_product = np.dot(vec1, vec2)
+        norm_vec1 = np.linalg.norm(vec1)
+        norm_vec2 = np.linalg.norm(vec2)
+
+        cosine_distance = dot_product / (norm_vec1 * norm_vec2)
+        return cosine_distance
 
     def load_source_faces(self, faces_dir):
-        """Load and process source face embeddings from directory"""
-        print(f"Loading source faces from: {faces_dir}")
+        """
+        Load all face images from a directory and extract embeddings
 
+        Args:
+            faces_dir: Path to directory containing face images
+        """
         faces_path = Path(faces_dir)
         if not faces_path.exists():
             raise ValueError(f"Faces directory does not exist: {faces_dir}")
 
+        print(f"Loading source faces from: {faces_dir}")
+
         # Get all image files
-        image_extensions = ['.jpg', '.jpeg', '.png', '.bmp']
-        face_files = []
-        for ext in image_extensions:
-            face_files.extend(faces_path.glob(f'*{ext}'))
-            face_files.extend(faces_path.glob(f'*{ext.upper()}'))
+        image_extensions = ('.jpg', '.jpeg', '.png', '.bmp', '.tiff')
+        face_files = [f for f in faces_path.iterdir()
+                     if f.suffix.lower() in image_extensions]
 
         if not face_files:
-            raise ValueError(f"No face images found in {faces_dir}")
+            raise ValueError(f"No image files found in {faces_dir}")
 
         print(f"Found {len(face_files)} face images")
 
@@ -52,34 +82,39 @@ class RopeCLI:
         for face_file in face_files:
             print(f"Processing: {face_file.name}")
 
-            # Read and process image
+            # Load image using cv2 (as done in GUI.py)
             img = cv2.imread(str(face_file))
             if img is None:
-                print(f"  Warning: Could not load {face_file.name}")
+                print(f"  ✗ Could not load image")
                 continue
 
+            # Convert BGR to RGB
             img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
 
-            # Convert to tensor
-            img_tensor = torch.from_numpy(img).cuda()
-            img_tensor = img_tensor.permute(2, 0, 1)
+            # Convert to tensor and move to CUDA (following VideoManager pattern)
+            img_tensor = torch.from_numpy(img.astype('uint8')).cuda()
+            img_tensor = img_tensor.permute(2, 0, 1)  # HWC to CHW
 
-            # Detect face
+            # Detect faces using the same method as GUI.py
             try:
-                kpss = self.models.run_detect(img_tensor, max_num=1)[0]
+                kpss = self.models.run_detect(img_tensor, max_num=1)
 
-                # Get face embedding
-                face_emb, _ = self.models.run_recognize(img_tensor, kpss)
+                if kpss and len(kpss) > 0:
+                    # Get face embedding using the same method as GUI.py
+                    face_emb, cropped_img = self.models.run_recognize(img_tensor, kpss[0])
 
-                self.source_embeddings.append({
-                    'file': str(face_file),
-                    'embedding': face_emb
-                })
-                print(f"  ✓ Face embedding extracted")
-
-            except (IndexError, Exception) as e:
-                print(f"  Warning: No face detected in {face_file.name}")
-                continue
+                    if face_emb is not None:
+                        self.source_embeddings.append({
+                            'embedding': face_emb,
+                            'file': str(face_file.name)
+                        })
+                        print(f"  ✓ Face embedding extracted")
+                    else:
+                        print(f"  ✗ Could not extract embedding")
+                else:
+                    print(f"  ✗ No face detected")
+            except Exception as e:
+                print(f"  ✗ Error processing face: {e}")
 
         if not self.source_embeddings:
             raise ValueError("No valid face embeddings could be extracted")
@@ -88,187 +123,247 @@ class RopeCLI:
 
     def find_faces_in_video(self, video_path):
         """
-        Find faces in the target video (first frame)
-
-        Robust face detection with proper numpy array handling to avoid
-        boolean context ambiguity errors. Follows Single Responsibility Principle.
+        Find all unique faces in the video
 
         Args:
-            video_path (str): Path to the video file
+            video_path: Path to input video
 
         Returns:
-            int: Number of faces detected
-
-        Raises:
-            ValueError: If video cannot be opened, no frames can be read, or no faces found
+            Number of unique faces found
         """
         print(f"Finding faces in video: {video_path}")
 
-        # Initialize video capture with error handling
         cap = cv2.VideoCapture(video_path)
-        if not cap.isOpened():
-            raise ValueError(f"Could not open video: {video_path}")
 
-        try:
-            # Read first frame
+        # Sample frames to find faces
+        total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+        sample_interval = max(1, total_frames // 10)  # Sample 10 frames
+
+        threshold = 0.65  # Similarity threshold for face matching
+
+        for i in range(0, min(total_frames, 10 * sample_interval), sample_interval):
+            cap.set(cv2.CAP_PROP_POS_FRAMES, i)
             ret, frame = cap.read()
             if not ret:
-                raise ValueError("Could not read first frame from video")
+                break
 
-            # Convert to RGB and prepare tensor
-            frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-            frame_tensor = torch.from_numpy(frame).cuda()
-            frame_tensor = frame_tensor.permute(2, 0, 1)
+            # Convert to RGB and tensor
+            frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+            img_tensor = torch.from_numpy(frame_rgb.astype('uint8')).cuda()
+            img_tensor = img_tensor.permute(2, 0, 1)
 
-            # Detect faces using the model
-            kpss = self.models.run_detect(frame_tensor, max_num=1)
+            # Detect faces
+            kpss = self.models.run_detect(img_tensor, max_num=10)
 
-            # CRITICAL FIX: Properly handle numpy array boolean evaluation
-            # This prevents "truth value of array is ambiguous" error
-            if kpss is None or (hasattr(kpss, '__len__') and len(kpss) == 0):
-                raise ValueError("No faces found in video")
+            for face_kps in kpss:
+                face_emb, cropped_img = self.models.run_recognize(img_tensor, face_kps)
 
-            print(f"Found {len(kpss)} face(s) in video")
+                # Check if this face is already found
+                found = False
+                for existing_face in self.found_faces:
+                    if self.findCosineDistance(existing_face['embedding'], face_emb) >= threshold:
+                        found = True
+                        break
 
-            # Map detected faces to source face embeddings (1:1 mapping)
-            self.found_faces = []
-            for i, kps in enumerate(kpss):
-                if i < len(self.source_embeddings):
+                # If new face, add to found faces
+                if not found:
                     self.found_faces.append({
-                        'kps': kps,
-                        'source_embedding': self.source_embeddings[i]['embedding']
+                        'embedding': face_emb,
+                        'kps': face_kps
                     })
 
-            return len(kpss)
+        cap.release()
 
-        finally:
-            # Ensure video capture is always released (Dependency Inversion Principle)
-            cap.release()
+        print(f"Found {len(self.found_faces)} unique face(s) in video")
+
+        # Create assignments - assign all source faces to all target faces
+        # This mimics selecting all faces in the GUI
+        for found_face in self.found_faces:
+            # Use all source embeddings cyclically
+            found_face['SourceFaceAssignments'] = self.source_embeddings
+            if self.source_embeddings:
+                # Use the first source as the assigned embedding
+                found_face['AssignedEmbedding'] = self.source_embeddings[0]['embedding']
+
+        # Assign found faces to video manager (like GUI does)
+        self.video_manager.assign_found_faces(self.found_faces)
+
+        return len(self.found_faces)
 
     def process_video(self, input_video, output_dir, quality=18, threads=2):
-        """Process the video with face swapping"""
-        print(f"\nProcessing video: {input_video}")
-        print(f"Output directory: {output_dir}")
-        print(f"Quality: {quality}, Threads: {threads}")
+        """
+        Process video with face swapping
 
-        # Setup paths
-        video_path = Path(input_video)
+        Args:
+            input_video: Path to input video
+            output_dir: Directory for output
+            quality: Video encoding quality (CRF value)
+            threads: Number of processing threads
+
+        Returns:
+            Path to output video
+        """
+        # Create output directory
         output_path = Path(output_dir)
         output_path.mkdir(parents=True, exist_ok=True)
 
         # Generate output filename
-        timestamp = str(time.time())[:10]
-        output_file = output_path / f"{video_path.stem}_swapped_{timestamp}.mp4"
-        temp_file = output_path / f"{video_path.stem}_temp_{timestamp}.mp4"
+        input_name = Path(input_video).stem
+        timestamp = int(time.time())
+        output_file = output_path / f"{input_name}_swapped_{timestamp}.mp4"
+
+        print(f"\nProcessing video: {input_video}")
+        print(f"Output directory: {output_dir}")
+        print(f"Quality: {quality}, Threads: {threads}")
 
         # Open video
-        cap = cv2.VideoCapture(str(video_path))
+        cap = cv2.VideoCapture(input_video)
         fps = cap.get(cv2.CAP_PROP_FPS)
-        frame_width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
-        frame_height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
-        total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+        width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+        height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+        frame_count = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
 
-        print(f"Video info: {frame_width}x{frame_height} @ {fps}fps, {total_frames} frames")
+        print(f"Video info: {width}x{height} @ {fps}fps, {frame_count} frames")
 
-        # Setup FFmpeg writer
-        ffmpeg_args = [
-            "ffmpeg",
-            '-hide_banner',
-            '-loglevel', 'error',
-            "-y",  # Overwrite output files
-            "-f", "rawvideo",
-            "-pix_fmt", "bgr24",
-            "-s", f"{frame_width}x{frame_height}",
-            "-r", str(fps),
-            "-i", "pipe:",
-            "-vf", "format=yuvj420p",
-            "-c:v", "libx264",
-            "-crf", str(quality),
-            "-r", str(fps),
-            str(temp_file)
-        ]
+        # Create temporary output file (without audio)
+        temp_file = output_path / f"temp_{timestamp}.mp4"
 
-        ffmpeg_process = subprocess.Popen(ffmpeg_args, stdin=subprocess.PIPE, stderr=subprocess.PIPE)
+        # Setup video writer with x264 codec
+        fourcc = cv2.VideoWriter_fourcc(*'mp4v')
+        out = cv2.VideoWriter(str(temp_file), fourcc, fps, (width, height))
 
-        # Process frames
-        frame_count = 0
-        start_time = time.time()
+        # Set up parameters for swapping (based on DEFAULT_DATA from Dicts.py)
+        parameters = {
+            # Detection settings
+            'DetectTypeTextSel': 'Retinaface',
+            'DetectScoreSlider': 50,
+            'ThresholdSlider': 65,
+
+            # Basic swapper settings
+            'SwapperTypeTextSel': '128',
+
+            # Feature switches - start with minimal settings
+            'FaceAdjSwitch': False,
+            'StrengthSwitch': False,
+            'ColorSwitch': False,
+            'RestorerSwitch': False,
+            'FaceParserSwitch': False,
+            'MouthParserSwitch': False,
+            'OccluderSwitch': False,
+            'DiffSwitch': False,
+            'CLIPSwitch': False,
+            'OrientSwitch': False,
+
+            # Sliders with default values
+            'BorderTopSlider': 0,
+            'BorderBottomSlider': 0,
+            'BorderSidesSlider': 0,
+            'BorderBlurSlider': 0,
+            'BlendSlider': 0,
+            'ColorRedSlider': 0,
+            'ColorGreenSlider': 0,
+            'ColorBlueSlider': 0,
+            'ColorGammaSlider': 1.0,
+            'DiffSlider': 0,
+            'FaceParserSlider': 0,
+            'MouthParserSlider': 0,
+            'FaceScaleSlider': 0,
+            'KPSScaleSlider': 0,
+            'KPSXSlider': 0,
+            'KPSYSlider': 0,
+            'OccluderSlider': 0,
+            'OrientSlider': 0,
+            'RestorerSlider': 0,
+            'StrengthSlider': 100,
+            'CLIPSlider': 0,
+            'CLIPTextEntry': '',
+            'RestorerTypeTextSel': 'GFPGAN',
+            'RestorerDetTypeTextSel': 'Reference'
+        }
+
+        control = {
+            'MaskViewButton': False
+        }
 
         print("\nProcessing frames...")
+        start_time = time.time()
 
-        try:
-            while True:
-                ret, frame = cap.read()
-                if not ret:
-                    break
+        # Process each frame
+        for frame_idx in range(frame_count):
+            ret, frame = cap.read()
+            if not ret:
+                break
 
-                # Convert to RGB for processing
-                frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-                frame_tensor = torch.from_numpy(frame_rgb).cuda()
-                frame_tensor = frame_tensor.permute(2, 0, 1)
+            # Convert to RGB
+            frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
 
-                # Detect faces in current frame
-                try:
-                    kpss = self.models.run_detect(frame_tensor, max_num=1)
+            # Convert to tensor (following VideoManager pattern)
+            img = torch.from_numpy(frame_rgb.astype('uint8')).cuda()
+            img = img.permute(2, 0, 1)  # HWC to CHW
 
-                    # CRITICAL FIX: Properly handle numpy array boolean evaluation
-                    if kpss is not None and hasattr(kpss, '__len__') and len(kpss) > 0:
-                        # Swap face using the first detected face and first source embedding
-                        for kps in kpss:
-                            # Use first source embedding for swapping
-                            source_emb = self.source_embeddings[0]['embedding']
+            # Detect faces in current frame
+            kpss = self.models.run_detect(img, max_num=20, score=parameters['DetectScoreSlider']/100.0)
 
-                            # Use the proper face swap method
-                            swapped_tensor = self.swap_faces_simple(frame_tensor, source_emb, kps)
-                            frame_tensor = swapped_tensor
-                            break  # Only process first face
+            # Get embeddings for all faces in frame
+            ret = []
+            for face_kps in kpss:
+                face_emb, _ = self.models.run_recognize(img, face_kps)
+                ret.append([face_kps, face_emb])
 
-                except Exception as e:
-                    print(f"Warning: Face swap failed on frame {frame_count}: {e}")
+            if ret and self.found_faces:
+                # Process faces (following VideoManager logic)
+                for fface in ret:
+                    for idx, source_emb in enumerate(self.source_embeddings):
+                        # Use source embeddings cyclically
+                        source_idx = frame_idx % len(self.source_embeddings)
+                        s_e = self.source_embeddings[source_idx]['embedding']
 
-                # Convert back to numpy and BGR for output
-                frame_rgb_output = frame_tensor.permute(1, 2, 0).cpu().numpy()
-                frame_bgr_output = cv2.cvtColor(frame_rgb_output.astype(np.uint8), cv2.COLOR_RGB2BGR)
+                        # Swap the face using swap_core
+                        try:
+                            img = self.video_manager.swap_core(img, fface[0], s_e, parameters, control)
+                            break  # Only swap with first source for now
+                        except Exception as e:
+                            # If swap fails, continue with original frame
+                            pass
 
-                # Write frame to FFmpeg
-                try:
-                    ffmpeg_process.stdin.write(frame_bgr_output.tobytes())
-                except BrokenPipeError:
-                    print("FFmpeg pipe broken, stopping...")
-                    break
+            # Convert back to HWC for writing
+            img_np = img.permute(1, 2, 0).cpu().numpy()
+            img_np = np.clip(img_np, 0, 255).astype(np.uint8)
+            frame_bgr = cv2.cvtColor(img_np, cv2.COLOR_RGB2BGR)
 
-                frame_count += 1
-                if frame_count % 30 == 0:
-                    elapsed = time.time() - start_time
-                    fps_actual = frame_count / elapsed if elapsed > 0 else 0
-                    progress = (frame_count / total_frames) * 100
-                    print(f"  Progress: {progress:.1f}% ({frame_count}/{total_frames}) - {fps_actual:.1f} fps")
+            # Write frame
+            out.write(frame_bgr)
 
-        finally:
-            # Cleanup video capture
-            cap.release()
+            # Progress update
+            if frame_idx % 30 == 0:
+                elapsed = time.time() - start_time
+                fps_actual = (frame_idx + 1) / elapsed if elapsed > 0 else 0
+                progress = (frame_idx + 1) / frame_count * 100
+                print(f"  Progress: {progress:.1f}% ({frame_idx+1}/{frame_count}) - {fps_actual:.1f} fps", end='\r')
 
-            # Close FFmpeg stdin and wait for completion
-            if ffmpeg_process.stdin:
-                ffmpeg_process.stdin.close()
-            ffmpeg_process.wait()
+        # Clean up
+        cap.release()
+        out.release()
+        cv2.destroyAllWindows()
 
-        # Add audio from original video
-        print("\nAdding audio from original video...")
+        print("\n\nAdding audio from original video...")
+
+        # Use ffmpeg to add audio from original video
         audio_args = [
             "ffmpeg",
-            '-hide_banner',
-            '-loglevel', 'error',
-            "-y",  # Overwrite output files
             "-i", str(temp_file),
-            "-i", str(video_path),
-            "-c", "copy",
+            "-i", str(input_video),
+            "-c:v", "libx264",
+            "-crf", str(quality),
+            "-preset", "medium",
+            "-c:a", "aac",
+            "-b:a", "128k",
             "-map", "0:v:0",
             "-map", "1:a:0?",
             "-shortest",
             str(output_file)
         ]
-        subprocess.run(audio_args)
+        subprocess.run(audio_args, capture_output=True)
 
         # Remove temp file
         if temp_file.exists():
@@ -282,117 +377,6 @@ class RopeCLI:
 
         return str(output_file)
 
-    def swap_faces_simple(self, frame_tensor, source_embedding, target_kps):
-        """
-        Use the existing working swap_core from rope VideoManager
-        WITH ALL REQUIRED PARAMETERS from Dicts.py
-
-        Args:
-            frame_tensor: Input frame as tensor (C,H,W)
-            source_embedding: Face embedding from source image
-            target_kps: Target face keypoints (5 points)
-
-        Returns:
-            Tensor: Frame with swapped face using proven rope logic
-        """
-        try:
-            # Convert frame tensor to the format expected by VideoManager
-            # VideoManager expects (H,W,C) format
-            img = frame_tensor.permute(1, 2, 0)  # Convert from (C,H,W) to (H,W,C)
-
-            # Set up COMPLETE parameters dict with ALL values from Dicts.py
-            parameters = {
-                # Basic swapper settings
-                'SwapperTypeTextSel': '128',  # Use 128x128 swapper
-
-                # Switches (all disabled for simple processing)
-                'FaceAdjSwitch': True,
-                'StrengthSwitch': True,
-                'ColorSwitch': True,
-                'RestorerSwitch': True,
-                'FaceParserSwitch': True,
-                'MouthParserSwitch': True,
-                'OccluderSwitch': True,
-                'DiffSwitch': True,
-                'CLIPSwitch': True,
-                'OrientSwitch': True,
-
-                # Border sliders (required by swap_core)
-                'BorderTopSlider': 10,
-                'BorderBottomSlider': 10,
-                'BorderSidesSlider': 10,
-                'BorderBlurSlider': 10,
-
-                # Blend slider
-                'BlendSlider': 5,
-
-                # Color sliders
-                'ColorRedSlider': 0,
-                'ColorGreenSlider': 0,
-                'ColorBlueSlider': 0,
-                'ColorGammaSlider': 1.0,
-
-                # Detection slider
-                'DetectScoreSlider': 50,
-
-                # Diff slider
-                'DiffSlider': 4,
-
-                # Face parser sliders
-                'FaceParserSlider': 0,
-                'MouthParserSlider': 0,
-
-                # Face adjustment sliders
-                'FaceScaleSlider': 0,
-                'KPSScaleSlider': 0,
-                'KPSXSlider': 0,
-                'KPSYSlider': 0,
-
-                # Occluder slider
-                'OccluderSlider': 0,
-
-                # Orientation slider
-                'OrientSlider': 0,
-
-                # Restorer slider
-                'RestorerSlider': 100,
-
-                # Strength slider
-                'StrengthSlider': 100,
-
-                # CLIP slider and text
-                'CLIPSlider': 0,
-                'CLIPTextEntry': '',
-
-                # Restorer type selections
-                'RestorerTypeTextSel': 'GFPGAN',
-                'RestorerDetTypeTextSel': 'Reference'
-            }
-
-            # Set up control dict
-            control = {
-                'MaskViewButton': False
-            }
-
-            # Call the EXACT same swap_core method used in the GUI
-            swapped_img = self.video_manager.swap_core(img, target_kps, source_embedding, parameters, control)
-
-            # Convert back to tensor format (C,H,W)
-            if isinstance(swapped_img, np.ndarray):
-                swapped_tensor = torch.from_numpy(swapped_img).cuda()
-                swapped_tensor = swapped_tensor.permute(2, 0, 1)  # Convert back to (C,H,W)
-            else:
-                # If it's already a tensor, just ensure correct format
-                swapped_tensor = swapped_img.permute(2, 0, 1)
-
-            return swapped_tensor
-
-        except Exception as e:
-            print(f"Swap error using VideoManager.swap_core: {e}")
-            import traceback
-            traceback.print_exc()
-            return frame_tensor
-
 
 def main():
     parser = argparse.ArgumentParser(description='Rope Deepfake CLI - Command line interface for face swapping')
@@ -401,7 +385,7 @@ def main():
     parser.add_argument('-f', '--faces', required=True, help='Directory containing source face images')
     parser.add_argument('-o', '--output', required=True, help='Output directory for processed videos')
     parser.add_argument('-q', '--quality', type=int, default=18,
-                        help='Video quality (CRF value, lower=better, default: 18)')
+                       help='Video quality (CRF value, lower=better, default: 18)')
     parser.add_argument('-t', '--threads', type=int, default=2, help='Number of processing threads (default: 2)')
     parser.add_argument('--find-faces-only', action='store_true', help='Only find faces without processing')
 
@@ -442,6 +426,8 @@ def main():
 
     except Exception as e:
         print(f"\n❌ Error: {e}")
+        import traceback
+        traceback.print_exc()
         sys.exit(1)
 
 
