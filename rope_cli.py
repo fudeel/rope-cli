@@ -97,8 +97,6 @@ class RopeCLI:
             try:
                 kpss = self.models.run_detect(img_tensor, max_num=1)
 
-                # FIX: The original check 'if kpss and ...' fails because the boolean value of a
-                # numpy array is ambiguous. We check for the existence and size of the array instead.
                 if hasattr(kpss, 'size') and kpss.size > 0:
                     # Get face embedding using the same method as GUI.py
                     face_emb, cropped_img = self.models.run_recognize(img_tensor, kpss[0])
@@ -137,11 +135,12 @@ class RopeCLI:
 
         # Sample frames to find faces
         total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
-        sample_interval = max(1, total_frames // 10)  # Sample 10 frames
+        sample_interval = max(1, total_frames // 20)  # Sample more frames for better detection
 
-        threshold = 0.65  # Similarity threshold for face matching
+        # TWEAK: Lowered threshold for more robust face matching across frames
+        threshold = 0.60
 
-        for i in range(0, min(total_frames, 10 * sample_interval), sample_interval):
+        for i in range(0, min(total_frames, 20 * sample_interval), sample_interval):
             cap.set(cv2.CAP_PROP_POS_FRAMES, i)
             ret, frame = cap.read()
             if not ret:
@@ -232,19 +231,19 @@ class RopeCLI:
         fourcc = cv2.VideoWriter_fourcc(*'mp4v')
         out = cv2.VideoWriter(str(temp_file), fourcc, fps, (width, height))
 
-        # Set up parameters for swapping (based on DEFAULT_DATA from Dicts.py)
+        # TWEAK: Lowered detection score to be less strict, helps with motion blur or angled faces.
         parameters = {
             # Detection settings
             'DetectTypeTextSel': 'Retinaface',
-            'DetectScoreSlider': 50,
-            'ThresholdSlider': 65,
+            'DetectScoreSlider': 30, # Lowered from 50
+            'ThresholdSlider': 60, # Lowered from 65 for better matching
 
             # Basic swapper settings
             'SwapperTypeTextSel': '128',
 
             # Feature switches - start with minimal settings
             'FaceAdjSwitch': False,
-            'StrengthSwitch': False,
+            'StrengthSwitch': True, # Enabled for potentially better results
             'ColorSwitch': False,
             'RestorerSwitch': False,
             'FaceParserSwitch': False,
@@ -258,8 +257,8 @@ class RopeCLI:
             'BorderTopSlider': 0,
             'BorderBottomSlider': 0,
             'BorderSidesSlider': 0,
-            'BorderBlurSlider': 0,
-            'BlendSlider': 0,
+            'BorderBlurSlider': 6, # Added slight blur for better blending
+            'BlendSlider': 10, # Added some blending
             'ColorRedSlider': 0,
             'ColorGreenSlider': 0,
             'ColorBlueSlider': 0,
@@ -305,26 +304,29 @@ class RopeCLI:
             kpss = self.models.run_detect(img, max_num=20, score=parameters['DetectScoreSlider']/100.0)
 
             # Get embeddings for all faces in frame
-            ret = []
+            faces_in_frame = []
             for face_kps in kpss:
                 face_emb, _ = self.models.run_recognize(img, face_kps)
-                ret.append([face_kps, face_emb])
+                faces_in_frame.append({'kps': face_kps, 'embedding': face_emb})
 
-            if ret and self.found_faces:
+            if faces_in_frame and self.found_faces:
                 # Process faces (following VideoManager logic)
-                for fface in ret:
-                    for idx, source_emb in enumerate(self.source_embeddings):
-                        # Use source embeddings cyclically
-                        source_idx = frame_idx % len(self.source_embeddings)
-                        s_e = self.source_embeddings[source_idx]['embedding']
+                for fface in faces_in_frame:
+                    # Find a matching face from the initial scan
+                    for found_face in self.found_faces:
+                        if self.findCosineDistance(fface['embedding'], found_face['embedding']) >= parameters['ThresholdSlider']/100.0:
+                            # Use the assigned source embedding for this found face
+                            if found_face.get('AssignedEmbedding') is not None:
+                                s_e = found_face['AssignedEmbedding']
 
-                        # Swap the face using swap_core
-                        try:
-                            img = self.video_manager.swap_core(img, fface[0], s_e, parameters, control)
-                            break  # Only swap with first source for now
-                        except Exception as e:
-                            # If swap fails, continue with original frame
-                            pass
+                                # Swap the face using swap_core
+                                try:
+                                    img = self.video_manager.swap_core(img, fface['kps'], s_e, parameters, control)
+                                    # Once swapped, move to the next detected face in the frame
+                                    break
+                                except Exception as e:
+                                    print(f"\nWarning: Swap failed for a face in frame {frame_idx}: {e}")
+                                    pass
 
             # Convert back to HWC for writing
             img_np = img.permute(1, 2, 0).cpu().numpy()
@@ -364,7 +366,8 @@ class RopeCLI:
             "-shortest",
             str(output_file)
         ]
-        subprocess.run(audio_args, capture_output=True)
+        subprocess.run(audio_args, capture_output=False, text=True)
+
 
         # Remove temp file
         if temp_file.exists():
@@ -415,6 +418,10 @@ def main():
             print(f"\nFound {num_faces} face(s) in video. Use without --find-faces-only to process.")
             sys.exit(0)
 
+        if num_faces == 0:
+            print("\nWarning: No faces found in the video to swap. Exiting.")
+            sys.exit(0)
+
         # Process video
         output_file = cli.process_video(
             args.video,
@@ -434,3 +441,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+
