@@ -1,0 +1,12 @@
+./models
+models
+../models
+videos
+faces
+output
+../videos
+../faces
+../output
+venv
+.venv
+.idea
