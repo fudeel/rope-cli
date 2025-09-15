@@ -6,6 +6,7 @@ import cv2
 import numpy as np
 import torch
 import torchvision
+from torchvision.transforms import v2
 from pathlib import Path
 import time
 import subprocess
@@ -283,33 +284,63 @@ class RopeCLI:
 
     def swap_faces_simple(self, frame_tensor, source_embedding, target_kps):
         """
-        Simple face swap using the models
+        Complete face swap implementation using the correct Models methods
 
         Args:
-            frame_tensor: Input frame as tensor
+            frame_tensor: Input frame as tensor (C,H,W)
             source_embedding: Face embedding from source image
-            target_kps: Target face keypoints
+            target_kps: Target face keypoints (5 points)
 
         Returns:
             Tensor: Frame with swapped face
         """
         try:
-            # Calculate swapper latent from source embedding
-            latent = self.models.calc_swapper_latent(source_embedding)
+            # Step 1: Extract and align the target face using run_recognize
+            _, target_face_crop = self.models.run_recognize(frame_tensor, target_kps)
 
-            # Prepare face crop from target
-            cropped_face = self.models.crop_face(frame_tensor, target_kps)
+            # Step 2: Ensure target face is in correct format (1,3,128,128)
+            if len(target_face_crop.shape) == 3:
+                target_face_crop = target_face_crop.unsqueeze(0)
 
-            # Create output tensor for swap
-            output = torch.zeros((1, 3, 128, 128), dtype=torch.float32, device='cuda')
+            # Step 3: Ensure source embedding is tensor format (1,512)
+            if not isinstance(source_embedding, torch.Tensor):
+                source_embedding = torch.from_numpy(source_embedding).cuda()
+            if len(source_embedding.shape) == 1:
+                source_embedding = source_embedding.unsqueeze(0)
 
-            # Run the face swapper
-            self.models.run_swapper(cropped_face, latent, output)
+            # Step 4: Create output tensor for swapped face (1,3,128,128)
+            swapped_face_output = torch.zeros((1, 3, 128, 128), dtype=torch.float32, device='cuda')
 
-            # Paste swapped face back to frame
-            result = self.models.paste_face(frame_tensor, output, target_kps)
+            # Step 5: Run the face swapper
+            self.models.run_swapper(target_face_crop, source_embedding, swapped_face_output)
 
-            return result
+            # Step 6: Simple paste back - replace face region with swapped face
+            result_frame = frame_tensor.clone()
+
+            # Get face bounding box from keypoints
+            kps_np = target_kps.cpu().numpy() if isinstance(target_kps, torch.Tensor) else target_kps
+
+            # Calculate bounding box (simple approach)
+            x_min = int(max(0, np.min(kps_np[:, 0]) - 50))
+            x_max = int(min(frame_tensor.shape[2], np.max(kps_np[:, 0]) + 50))
+            y_min = int(max(0, np.min(kps_np[:, 1]) - 50))
+            y_max = int(min(frame_tensor.shape[1], np.max(kps_np[:, 1]) + 50))
+
+            # Resize swapped face to fit bounding box
+            box_width = x_max - x_min
+            box_height = y_max - y_min
+
+            if box_width > 0 and box_height > 0:
+                # Resize the swapped face to match the bounding box
+                resize_transform = v2.Resize((box_height, box_width), antialias=True)
+                swapped_face_resized = resize_transform(swapped_face_output.squeeze(0))
+
+                # Paste the swapped face back to the frame
+                result_frame[:, y_min:y_max, x_min:x_max] = swapped_face_resized
+
+                return result_frame
+            else:
+                return frame_tensor
 
         except Exception as e:
             print(f"Swap error: {e}")
