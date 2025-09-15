@@ -189,7 +189,7 @@ class RopeCLI:
 
         return len(self.found_faces)
 
-    def process_video(self, input_video, output_dir, quality=18, threads=2):
+    def process_video(self, input_video, output_dir, quality=16, threads=2):
         """
         Process video with face swapping
 
@@ -231,21 +231,21 @@ class RopeCLI:
         fourcc = cv2.VideoWriter_fourcc(*'mp4v')
         out = cv2.VideoWriter(str(temp_file), fourcc, fps, (width, height))
 
-        # TWEAK: Lowered detection score to be less strict, helps with motion blur or angled faces.
+        # TWEAK: Upped quality settings for better visual output
         parameters = {
             # Detection settings
             'DetectTypeTextSel': 'Retinaface',
-            'DetectScoreSlider': 30, # Lowered from 50
-            'ThresholdSlider': 60, # Lowered from 65 for better matching
+            'DetectScoreSlider': 30,
+            'ThresholdSlider': 60,
 
             # Basic swapper settings
-            'SwapperTypeTextSel': '128',
+            'SwapperTypeTextSel': '256', # Upped to 256 for higher quality swap
 
-            # Feature switches - start with minimal settings
+            # Feature switches
             'FaceAdjSwitch': False,
-            'StrengthSwitch': True, # Enabled for potentially better results
+            'StrengthSwitch': True,
             'ColorSwitch': False,
-            'RestorerSwitch': False,
+            'RestorerSwitch': True, # Enabled Face Restore for better quality
             'FaceParserSwitch': False,
             'MouthParserSwitch': False,
             'OccluderSwitch': False,
@@ -257,8 +257,8 @@ class RopeCLI:
             'BorderTopSlider': 0,
             'BorderBottomSlider': 0,
             'BorderSidesSlider': 0,
-            'BorderBlurSlider': 6, # Added slight blur for better blending
-            'BlendSlider': 10, # Added some blending
+            'BorderBlurSlider': 6,
+            'BlendSlider': 10,
             'ColorRedSlider': 0,
             'ColorGreenSlider': 0,
             'ColorBlueSlider': 0,
@@ -272,8 +272,8 @@ class RopeCLI:
             'KPSYSlider': 0,
             'OccluderSlider': 0,
             'OrientSlider': 0,
-            'RestorerSlider': 0,
-            'StrengthSlider': 100,
+            'RestorerSlider': 90, # Favor the restored face
+            'StrengthSlider': 125, # Slightly increased strength
             'CLIPSlider': 0,
             'CLIPTextEntry': '',
             'RestorerTypeTextSel': 'GFPGAN',
@@ -358,9 +358,9 @@ class RopeCLI:
             "-i", str(input_video),
             "-c:v", "libx264",
             "-crf", str(quality),
-            "-preset", "medium",
+            "-preset", "slow", # Better compression for better quality
             "-c:a", "aac",
-            "-b:a", "128k",
+            "-b:a", "192k", # Higher audio bitrate
             "-map", "0:v:0",
             "-map", "1:a:0?",
             "-shortest",
@@ -388,8 +388,8 @@ def main():
     parser.add_argument('-v', '--video', required=True, help='Input video file path')
     parser.add_argument('-f', '--faces', required=True, help='Directory containing source face images')
     parser.add_argument('-o', '--output', required=True, help='Output directory for processed videos')
-    parser.add_argument('-q', '--quality', type=int, default=18,
-                       help='Video quality (CRF value, lower=better, default: 18)')
+    parser.add_argument('-q', '--quality', type=int, default=16,
+                       help='Video quality (CRF value, lower=better, default: 16)')
     parser.add_argument('-t', '--threads', type=int, default=2, help='Number of processing threads (default: 2)')
     parser.add_argument('--find-faces-only', action='store_true', help='Only find faces without processing')
 
