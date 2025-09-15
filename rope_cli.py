@@ -86,43 +86,63 @@ class RopeCLI:
         print(f"Successfully loaded {len(self.source_embeddings)} face embeddings")
 
     def find_faces_in_video(self, video_path):
-        """Find faces in the target video (first frame)"""
+        """
+        Find faces in the target video (first frame)
+
+        Robust face detection with proper numpy array handling to avoid
+        boolean context ambiguity errors. Follows Single Responsibility Principle.
+
+        Args:
+            video_path (str): Path to the video file
+
+        Returns:
+            int: Number of faces detected
+
+        Raises:
+            ValueError: If video cannot be opened, no frames can be read, or no faces found
+        """
         print(f"Finding faces in video: {video_path}")
 
+        # Initialize video capture with error handling
         cap = cv2.VideoCapture(video_path)
         if not cap.isOpened():
             raise ValueError(f"Could not open video: {video_path}")
 
-        # Read first frame
-        ret, frame = cap.read()
-        if not ret:
-            raise ValueError("Could not read first frame from video")
+        try:
+            # Read first frame
+            ret, frame = cap.read()
+            if not ret:
+                raise ValueError("Could not read first frame from video")
 
-        # Convert and detect faces
-        frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-        frame_tensor = torch.from_numpy(frame).cuda()
-        frame_tensor = frame_tensor.permute(2, 0, 1)
+            # Convert to RGB and prepare tensor
+            frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+            frame_tensor = torch.from_numpy(frame).cuda()
+            frame_tensor = frame_tensor.permute(2, 0, 1)
 
-        # Find all faces (for single face videos, max_num=1)
-        kpss = self.models.run_detect(frame_tensor, max_num=1)
+            # Detect faces using the model
+            kpss = self.models.run_detect(frame_tensor, max_num=1)
 
-        cap.release()
+            # CRITICAL FIX: Properly handle numpy array boolean evaluation
+            # This prevents "truth value of array is ambiguous" error
+            if kpss is None or (hasattr(kpss, '__len__') and len(kpss) == 0):
+                raise ValueError("No faces found in video")
 
-        if not kpss:
-            raise ValueError("No faces found in video")
+            print(f"Found {len(kpss)} face(s) in video")
 
-        print(f"Found {len(kpss)} face(s) in video")
+            # Map detected faces to source face embeddings (1:1 mapping)
+            self.found_faces = []
+            for i, kps in enumerate(kpss):
+                if i < len(self.source_embeddings):
+                    self.found_faces.append({
+                        'kps': kps,
+                        'source_embedding': self.source_embeddings[i]['embedding']
+                    })
 
-        # Map found faces to source faces (simple 1:1 mapping for single face)
-        self.found_faces = []
-        for i, kps in enumerate(kpss):
-            if i < len(self.source_embeddings):
-                self.found_faces.append({
-                    'kps': kps,
-                    'source_embedding': self.source_embeddings[0]['embedding']  # Use first source for all
-                })
+            return len(kpss)
 
-        return len(kpss)
+        finally:
+            # Ensure video capture is always released (Dependency Inversion Principle)
+            cap.release()
 
     def process_video(self, input_video, output_dir, quality=18, threads=2):
         """Process the video with face swapping"""
@@ -154,73 +174,83 @@ class RopeCLI:
             "ffmpeg",
             '-hide_banner',
             '-loglevel', 'error',
-            "-an",
+            "-y",  # Overwrite output files
+            "-f", "rawvideo",
+            "-pix_fmt", "bgr24",
+            "-s", f"{frame_width}x{frame_height}",
             "-r", str(fps),
             "-i", "pipe:",
             "-vf", "format=yuvj420p",
             "-c:v", "libx264",
             "-crf", str(quality),
             "-r", str(fps),
-            "-s", f"{frame_width}x{frame_height}",
             str(temp_file)
         ]
 
-        ffmpeg_process = subprocess.Popen(ffmpeg_args, stdin=subprocess.PIPE)
+        ffmpeg_process = subprocess.Popen(ffmpeg_args, stdin=subprocess.PIPE, stderr=subprocess.PIPE)
 
         # Process frames
         frame_count = 0
         start_time = time.time()
 
         print("\nProcessing frames...")
-        while True:
-            ret, frame = cap.read()
-            if not ret:
-                break
 
-            # Convert to RGB
-            frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+        try:
+            while True:
+                ret, frame = cap.read()
+                if not ret:
+                    break
 
-            # Convert to tensor
-            frame_tensor = torch.from_numpy(frame).cuda()
-            frame_tensor = frame_tensor.permute(2, 0, 1)
+                # Convert to RGB for processing
+                frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+                frame_tensor = torch.from_numpy(frame_rgb).cuda()
+                frame_tensor = frame_tensor.permute(2, 0, 1)
 
-            # Detect faces in current frame
-            try:
-                kpss = self.models.run_detect(frame_tensor, max_num=1)
+                # Detect faces in current frame
+                try:
+                    kpss = self.models.run_detect(frame_tensor, max_num=1)
 
-                if kpss:
-                    # Swap face
-                    for kps in kpss:
-                        # Use first source embedding for swapping
-                        source_emb = self.source_embeddings[0]['embedding']
+                    # CRITICAL FIX: Properly handle numpy array boolean evaluation
+                    if kpss is not None and hasattr(kpss, '__len__') and len(kpss) > 0:
+                        # Swap face using the first detected face and first source embedding
+                        for kps in kpss:
+                            # Use first source embedding for swapping
+                            source_emb = self.source_embeddings[0]['embedding']
 
-                        # Run face swap
-                        swapped_face = self.models.run_swap(frame_tensor, source_emb, kps)
+                            # Use the proper face swap method
+                            swapped_tensor = self.swap_faces_simple(frame_tensor, source_emb, kps)
+                            frame_tensor = swapped_tensor
+                            break  # Only process first face
 
-                        # Get swapped image
-                        frame_tensor = swapped_face
+                except Exception as e:
+                    print(f"Warning: Face swap failed on frame {frame_count}: {e}")
 
-            except Exception as e:
-                print(f"Warning: Face swap failed on frame {frame_count}: {e}")
+                # Convert back to numpy and BGR for output
+                frame_rgb_output = frame_tensor.permute(1, 2, 0).cpu().numpy()
+                frame_bgr_output = cv2.cvtColor(frame_rgb_output.astype(np.uint8), cv2.COLOR_RGB2BGR)
 
-            # Convert back to numpy
-            frame = frame_tensor.permute(1, 2, 0).cpu().numpy()
-            frame = cv2.cvtColor(frame.astype(np.uint8), cv2.COLOR_RGB2BGR)
+                # Write frame to FFmpeg
+                try:
+                    ffmpeg_process.stdin.write(frame_bgr_output.tobytes())
+                except BrokenPipeError:
+                    print("FFmpeg pipe broken, stopping...")
+                    break
 
-            # Write frame
-            ffmpeg_process.stdin.write(frame.tobytes())
+                frame_count += 1
+                if frame_count % 30 == 0:
+                    elapsed = time.time() - start_time
+                    fps_actual = frame_count / elapsed if elapsed > 0 else 0
+                    progress = (frame_count / total_frames) * 100
+                    print(f"  Progress: {progress:.1f}% ({frame_count}/{total_frames}) - {fps_actual:.1f} fps")
 
-            frame_count += 1
-            if frame_count % 30 == 0:
-                elapsed = time.time() - start_time
-                fps_actual = frame_count / elapsed
-                progress = (frame_count / total_frames) * 100
-                print(f"  Progress: {progress:.1f}% ({frame_count}/{total_frames}) - {fps_actual:.1f} fps")
+        finally:
+            # Cleanup video capture
+            cap.release()
 
-        # Cleanup
-        cap.release()
-        ffmpeg_process.stdin.close()
-        ffmpeg_process.wait()
+            # Close FFmpeg stdin and wait for completion
+            if ffmpeg_process.stdin:
+                ffmpeg_process.stdin.close()
+            ffmpeg_process.wait()
 
         # Add audio from original video
         print("\nAdding audio from original video...")
@@ -228,6 +258,7 @@ class RopeCLI:
             "ffmpeg",
             '-hide_banner',
             '-loglevel', 'error',
+            "-y",  # Overwrite output files
             "-i", str(temp_file),
             "-i", str(video_path),
             "-c", "copy",
@@ -251,18 +282,33 @@ class RopeCLI:
         return str(output_file)
 
     def swap_faces_simple(self, frame_tensor, source_embedding, target_kps):
-        """Simple face swap using the models"""
+        """
+        Simple face swap using the models
+
+        Args:
+            frame_tensor: Input frame as tensor
+            source_embedding: Face embedding from source image
+            target_kps: Target face keypoints
+
+        Returns:
+            Tensor: Frame with swapped face
+        """
         try:
-            # Extract target face
-            target_face = self.models.crop_face(frame_tensor, target_kps)
+            # Calculate swapper latent from source embedding
+            latent = self.models.calc_swapper_latent(source_embedding)
 
-            # Run swap model
-            holder = self.models.run_swap_stg1(source_embedding)
+            # Prepare face crop from target
+            cropped_face = self.models.crop_face(frame_tensor, target_kps)
+
+            # Create output tensor for swap
             output = torch.zeros((1, 3, 128, 128), dtype=torch.float32, device='cuda')
-            self.models.run_swap_stg2(target_face, holder, output)
 
-            # Paste back to frame
+            # Run the face swapper
+            self.models.run_swapper(cropped_face, latent, output)
+
+            # Paste swapped face back to frame
             result = self.models.paste_face(frame_tensor, output, target_kps)
+
             return result
 
         except Exception as e:
