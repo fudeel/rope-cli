@@ -8,7 +8,7 @@ import cv2
 import numpy as np
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI, HTTPException, Form, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, HTTPException, Form, WebSocket, WebSocketDisconnect, UploadFile, File
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.middleware.cors import CORSMiddleware
@@ -37,6 +37,21 @@ for dir_path in [UPLOAD_DIR, OUTPUT_DIR, FACES_DIR, VIDEOS_DIR, TEMP_DIR, STATIC
 processing_queue = asyncio.Queue()
 processing_status = {}
 websocket_connections = []
+
+
+# Utility function to clear faces directory
+def clear_faces_directory():
+    """Clear all files in the faces directory"""
+    print(f"🧹 Clearing faces directory: {FACES_DIR}")
+    if FACES_DIR.exists():
+        count = 0
+        for file in FACES_DIR.glob("*"):
+            if file.is_file():
+                file.unlink()
+                count += 1
+        print(f"   Deleted {count} file(s)")
+        return True
+    return False
 
 
 # Background worker for processing videos
@@ -70,18 +85,34 @@ async def process_video_worker():
             await notify_websockets(job_id, processing_status[job_id])
 
             try:
-                # Create CLI instance
-                print("📦 Initializing Rope CLI...")
-                cli = RopeCLI()
+                # Create progress callback for real-time updates
+                async def progress_callback(progress: float, message: str):
+                    """Callback to update progress through WebSocket"""
+                    processing_status[job_id]['progress'] = min(progress, 99.0)  # Cap at 99% until fully complete
+                    processing_status[job_id]['message'] = message
+                    await notify_websockets(job_id, processing_status[job_id])
+                    # Small delay to prevent flooding
+                    await asyncio.sleep(0.1)
+
+                # Create CLI instance with progress callback
+                print("📦 Initializing Rope CLI with progress tracking...")
+
+                # We need to wrap the async callback for sync usage
+                def sync_progress_wrapper(progress: float, message: str):
+                    """Sync wrapper for async progress callback"""
+                    try:
+                        # Create a new event loop task for the async callback
+                        loop = asyncio.get_event_loop()
+                        loop.create_task(progress_callback(progress, message))
+                    except Exception as e:
+                        print(f"Progress update error: {e}")
+
+                cli = RopeCLI(progress_callback=sync_progress_wrapper)
 
                 # Load faces
                 faces_path = FACES_DIR
                 print(f"👤 Loading faces from: {faces_path}")
                 cli.load_source_faces(str(faces_path))
-
-                processing_status[job_id]['message'] = 'Loaded source faces...'
-                processing_status[job_id]['progress'] = 15.0
-                await notify_websockets(job_id, processing_status[job_id])
 
                 # Find faces in video
                 video_path = VIDEOS_DIR / job['video_file']
@@ -91,19 +122,21 @@ async def process_video_worker():
                 print(f"🔍 Finding faces in video: {video_path}")
                 num_faces = cli.find_faces_in_video(str(video_path))
 
-                processing_status[job_id]['message'] = f'Found {num_faces} faces. Processing...'
-                processing_status[job_id]['progress'] = 25.0
-                await notify_websockets(job_id, processing_status[job_id])
+                if num_faces == 0:
+                    raise ValueError("No faces found in the video")
 
-                # Process video
-                print(f"🎥 Processing video with deepfake...")
-                output_file = cli.process_video(
+                # Process video with progress callback
+                print(f"🎥 Processing video with deepfake (main actor only)...")
+                output_file = await asyncio.get_event_loop().run_in_executor(
+                    None,
+                    cli.process_video,
                     str(video_path),
                     str(OUTPUT_DIR),
-                    quality=job.get('quality', 14),
-                    threads=job.get('threads', 4),
-                    codec=job.get('codec', 'libx264'),
-                    preset=job.get('preset', 'slow')
+                    job.get('quality', 14),
+                    job.get('threads', 4),
+                    job.get('codec', 'libx264'),
+                    job.get('preset', 'slow'),
+                    sync_progress_wrapper
                 )
 
                 # Update status to completed
@@ -204,40 +237,6 @@ if STATIC_DIR.exists():
     app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
 
 
-# Pydantic models
-class ProcessingRequest(BaseModel):
-    video_file: str
-    quality: int = 14
-    threads: int = 4
-    codec: str = "libx264"
-    preset: str = "slow"
-
-
-class ProcessingStatus(BaseModel):
-    job_id: str
-    status: str
-    progress: float
-    message: str
-    output_file: Optional[str] = None
-    created_at: datetime
-    completed_at: Optional[datetime] = None
-
-
-# Utility functions
-def clear_faces_directory():
-    """Clear all files in the faces directory"""
-    print(f"🧹 Clearing faces directory: {FACES_DIR}")
-    if FACES_DIR.exists():
-        count = 0
-        for file in FACES_DIR.glob("*"):
-            if file.is_file():
-                file.unlink()
-                count += 1
-        print(f"   Deleted {count} file(s)")
-        return True
-    return False
-
-
 # API Endpoints
 
 @app.get("/")
@@ -255,120 +254,109 @@ async def list_videos():
         for ext in ['*.mp4', '*.avi', '*.mov', '*.mkv']:
             for video_file in VIDEOS_DIR.glob(ext):
                 videos.append({
-                    "filename": video_file.name,
-                    "size": video_file.stat().st_size,
-                    "modified": datetime.fromtimestamp(video_file.stat().st_mtime)
+                    'filename': video_file.name,
+                    'size': video_file.stat().st_size,
+                    'modified': datetime.fromtimestamp(video_file.stat().st_mtime).isoformat()
                 })
 
-    print(f"📹 Found {len(videos)} video(s) in {VIDEOS_DIR}")
-    return {"videos": videos, "count": len(videos)}
+    print(f"📹 Found {len(videos)} videos in {VIDEOS_DIR}")
+
+    return {"videos": videos}
 
 
 @app.post("/api/webcam/capture")
-async def capture_webcam_frames(frames_data: List[str] = Form(...)):
-    """Capture frames from webcam and save to faces directory"""
+async def capture_face(frames_data: List[str] = Form(...)):
+    """Capture multiple frames from webcam and save to ../faces directory"""
     try:
         print(f"📸 Receiving {len(frames_data)} webcam frames...")
 
         # Clear existing faces first
         clear_faces_directory()
 
-        # Process and save frames
+        # Process and save each frame
         saved_count = 0
         for i, frame_base64 in enumerate(frames_data):
             try:
-                # Decode base64 image
-                img_data = base64.b64decode(frame_base64.split(',')[1])
+                # Parse base64 image (remove data:image/jpeg;base64, prefix if present)
+                if ',' in frame_base64:
+                    frame_base64 = frame_base64.split(',')[1]
+
+                image_bytes = base64.b64decode(frame_base64)
 
                 # Convert to numpy array
-                nparr = np.frombuffer(img_data, np.uint8)
+                nparr = np.frombuffer(image_bytes, np.uint8)
                 img = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
 
                 if img is not None:
-                    # Save to faces directory
+                    # Save to faces directory with sequential naming
                     filename = f"face_{i:03d}.jpg"
                     filepath = FACES_DIR / filename
+
                     cv2.imwrite(str(filepath), img)
                     saved_count += 1
+                    print(f"   ✓ Saved: {filename}")
+                else:
+                    print(f"   ⚠ Failed to decode frame {i}")
+
             except Exception as e:
-                print(f"   Warning: Error processing frame {i}: {e}")
+                print(f"   ⚠ Error processing frame {i}: {e}")
                 continue
 
-        print(f"✅ Saved {saved_count} face frames to {FACES_DIR}")
+        if saved_count == 0:
+            raise ValueError("No valid frames could be saved")
+
+        print(f"✅ Successfully saved {saved_count} face frames to {FACES_DIR}")
 
         return {
             "success": True,
-            "message": f"Saved {saved_count} face frames",
+            "filename": f"face_000.jpg",  # Return first filename for compatibility
+            "message": f"Captured {saved_count} face frames successfully",
             "faces_count": saved_count
         }
 
     except Exception as e:
-        print(f"❌ Error capturing webcam frames: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
-
-
-@app.post("/api/faces/clear")
-async def clear_faces():
-    """Clear all faces from the faces directory"""
-    try:
-        success = clear_faces_directory()
-
-        if success:
-            return {
-                "success": True,
-                "message": "All faces cleared successfully"
-            }
-        else:
-            return {
-                "success": False,
-                "message": "Faces directory not found"
-            }
-
-    except Exception as e:
-        print(f"❌ Error clearing faces: {e}")
+        print(f"❌ Error capturing faces: {e}")
+        import traceback
+        traceback.print_exc()
         raise HTTPException(status_code=500, detail=str(e))
 
 
 @app.get("/api/faces/count")
-async def count_faces():
-    """Count the number of face images in the faces directory"""
-    count = 0
-    if FACES_DIR.exists():
-        count = len(list(FACES_DIR.glob("*.jpg")) +
-                    list(FACES_DIR.glob("*.png")) +
-                    list(FACES_DIR.glob("*.jpeg")))
-
+async def get_face_count():
+    """Get count of faces in ../faces directory"""
+    count = len(list(FACES_DIR.glob("*.jpg"))) + len(list(FACES_DIR.glob("*.png")))
     print(f"👤 Face count: {count}")
     return {"faces_count": count}
 
 
+@app.post("/api/faces/clear")
+async def clear_faces():
+    """Clear all faces from ../faces directory"""
+    if clear_faces_directory():
+        return {"success": True, "message": "All faces cleared"}
+    return {"success": False, "message": "No faces to clear"}
+
+
 @app.post("/api/process/deepfake")
-async def start_deepfake_processing(
+async def process_deepfake(
         video_file: str = Form(...),
         quality: int = Form(14),
         threads: int = Form(4),
         codec: str = Form("libx264"),
         preset: str = Form("slow")
 ):
-    """Start deepfake processing"""
+    """Queue a deepfake processing job"""
     try:
-        print(f"\n🎯 New deepfake request received:")
+        print(f"\n📝 New deepfake request:")
         print(f"   Video: {video_file}")
-        print(f"   Quality: CRF={quality}")
+        print(f"   Quality: {quality}")
         print(f"   Threads: {threads}")
         print(f"   Preset: {preset}")
 
-        # Check if video exists
-        video_path = VIDEOS_DIR / video_file
-        if not video_path.exists():
-            print(f"❌ Video not found: {video_path}")
-            raise HTTPException(status_code=404, detail="Video not found")
-
-        # Check if we have faces
-        face_count = len(list(FACES_DIR.glob("*")))
+        # Check if faces exist
+        face_count = len(list(FACES_DIR.glob("*.jpg"))) + len(list(FACES_DIR.glob("*.png")))
         if face_count == 0:
-            print(f"❌ No face images found in {FACES_DIR}")
-            raise HTTPException(status_code=400, detail="No face images found. Please capture faces first.")
+            raise HTTPException(status_code=400, detail="No source faces available. Please capture faces first.")
 
         print(f"   Faces available: {face_count}")
 
@@ -401,7 +389,7 @@ async def start_deepfake_processing(
         return {
             "job_id": job_id,
             "status": "queued",
-            "message": "Deepfake processing queued"
+            "message": "Deepfake processing queued (will swap main actor only)"
         }
 
     except HTTPException:
@@ -456,28 +444,6 @@ async def websocket_endpoint(websocket: WebSocket):
         print(f"🔌 WebSocket disconnected (remaining: {len(websocket_connections)})")
 
 
-@app.get("/api/jobs")
-async def list_all_jobs():
-    """List all processing jobs"""
-    jobs = list(processing_status.values())
-
-    active = len([j for j in jobs if j['status'] == 'processing'])
-    completed = len([j for j in jobs if j['status'] == 'completed'])
-    queued = len([j for j in jobs if j['status'] == 'queued'])
-    failed = len([j for j in jobs if j['status'] == 'failed'])
-
-    print(f"📊 Jobs - Total: {len(jobs)}, Active: {active}, Queued: {queued}, Completed: {completed}, Failed: {failed}")
-
-    return {
-        "jobs": jobs,
-        "total": len(jobs),
-        "active": active,
-        "queued": queued,
-        "completed": completed,
-        "failed": failed
-    }
-
-
 @app.get("/health")
 async def health_check():
     """Health check endpoint"""
@@ -488,7 +454,8 @@ async def health_check():
         "status": "healthy",
         "version": "2.0.0",
         "queue_size": queue_size,
-        "active_jobs": active_jobs
+        "active_jobs": active_jobs,
+        "websocket_connections": len(websocket_connections)
     }
 
 
@@ -496,6 +463,22 @@ if __name__ == "__main__":
     print("\n" + "=" * 60)
     print("   🎭 ROPE DEEPFAKE API - Starting...")
     print("=" * 60 + "\n")
+
+    print(f"📁 Checking directories:")
+    print(f"   Videos: {VIDEOS_DIR.absolute()}")
+    print(f"   Faces: {FACES_DIR.absolute()}")
+    print(f"   Output: {OUTPUT_DIR.absolute()}")
+
+    # Check if videos directory exists and has videos
+    if VIDEOS_DIR.exists():
+        video_count = len(list(VIDEOS_DIR.glob("*.mp4")) + list(VIDEOS_DIR.glob("*.avi")) +
+                          list(VIDEOS_DIR.glob("*.mov")) + list(VIDEOS_DIR.glob("*.mkv")))
+        print(f"   Found {video_count} video(s) in {VIDEOS_DIR}")
+        if video_count == 0:
+            print(f"   ⚠️ No videos found! Please add video files to: {VIDEOS_DIR.absolute()}")
+    else:
+        print(f"   ⚠️ Videos directory doesn't exist! Creating: {VIDEOS_DIR.absolute()}")
+        VIDEOS_DIR.mkdir(parents=True, exist_ok=True)
 
     uvicorn.run(
         "rope_api:app",

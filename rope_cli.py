@@ -27,8 +27,13 @@ device = 'cuda' if torch.cuda.is_available() else 'cpu'
 
 
 class RopeCLI:
-    def __init__(self):
-        """Initialize the Rope CLI with VideoManager"""
+    def __init__(self, progress_callback=None):
+        """Initialize the Rope CLI with VideoManager
+
+        Args:
+            progress_callback: Optional callback function for progress updates
+                              Signature: callback(progress: float, message: str)
+        """
         # Create Models instance first
         self.models = Models()
         # Pass models to VideoManager
@@ -36,7 +41,14 @@ class RopeCLI:
         self.source_embeddings = []
         self.source_images = []
         self.found_faces = []
+        self.main_face_index = -1  # Track the main actor's face
+        self.progress_callback = progress_callback
         print("Initializing Rope CLI...")
+
+    def update_progress(self, progress, message):
+        """Update progress through callback if available"""
+        if self.progress_callback:
+            self.progress_callback(progress, message)
 
     def findCosineDistance(self, vector1, vector2):
         """
@@ -65,6 +77,7 @@ class RopeCLI:
             raise ValueError(f"Faces directory does not exist: {faces_dir}")
 
         print(f"Loading source faces from: {faces_dir}")
+        self.update_progress(10, "Loading source faces...")
 
         # Get all image files
         image_extensions = ('.jpg', '.jpeg', '.png', '.bmp', '.tiff')
@@ -77,74 +90,93 @@ class RopeCLI:
         print(f"Found {len(face_files)} face images")
 
         # Process each face image
-        for face_file in face_files:
-            print(f"Processing: {face_file.name}")
+        for idx, face_file in enumerate(face_files):
+            print(f"  Processing: {face_file.name}")
 
-            # Load image using cv2 (as done in GUI.py)
+            # Load image
             img = cv2.imread(str(face_file))
             if img is None:
-                print(f"  ✗ Could not load image")
+                print(f"  Warning: Could not read {face_file.name}")
                 continue
 
             # Convert BGR to RGB
-            img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
+            img_rgb = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
 
-            # Convert to tensor and move to CUDA (following VideoManager pattern)
-            img_tensor = torch.from_numpy(img.astype('uint8')).cuda()
-            img_tensor = img_tensor.permute(2, 0, 1)  # HWC to CHW
+            # Convert to tensor
+            img_tensor = torch.from_numpy(img_rgb.astype('uint8')).cuda()
+            img_tensor = img_tensor.permute(2, 0, 1)
 
-            # Detect faces using the same method as GUI.py
-            try:
-                kpss = self.models.run_detect(img_tensor, max_num=1)
+            # Detect faces - FIXED: removed det_thresh parameter
+            kpss = self.models.run_detect(img_tensor, max_num=1)
 
-                if hasattr(kpss, 'size') and kpss.size > 0:
-                    # Get face embedding using the same method as GUI.py
-                    face_emb, cropped_img = self.models.run_recognize(img_tensor, kpss[0])
+            # --- FIX ---
+            # Check if kpss is not None and has items before proceeding.
+            # This avoids the "ValueError: The truth value of an array is ambiguous" error.
+            if kpss is not None and len(kpss) > 0:
+                # Get embedding
+                face_emb, cropped_img = self.models.run_recognize(img_tensor, kpss[0])
 
-                    if face_emb is not None:
-                        self.source_embeddings.append({
-                            'embedding': face_emb,
-                            'file': str(face_file.name)
-                        })
-                        print(f"  ✓ Face embedding extracted")
-                    else:
-                        print(f"  ✗ Could not extract embedding")
-                else:
-                    print(f"  ✗ No face detected")
-            except Exception as e:
-                print(f"  ✗ Error processing face: {e}")
+                self.source_embeddings.append({
+                    'embedding': face_emb,
+                    'file': face_file.name
+                })
+
+                # Store the actual image for GUI compatibility
+                self.source_images.append(img_rgb)
+
+                print(f"    ✓ Face extracted from {face_file.name}")
+            else:
+                print(f"    Warning: No face detected in {face_file.name}")
+
+            # Update progress
+            progress = 10 + (10 * (idx + 1) / len(face_files))
+            self.update_progress(progress, f"Loaded {idx + 1}/{len(face_files)} faces")
 
         if not self.source_embeddings:
-            raise ValueError("No valid face embeddings could be extracted")
+            raise ValueError("No valid faces found in source images")
 
         print(f"Successfully loaded {len(self.source_embeddings)} face embeddings")
+        self.update_progress(20, f"Loaded {len(self.source_embeddings)} source faces")
 
     def find_faces_in_video(self, video_path):
         """
-        Find all unique faces in the video
+        Find faces in target video and identify the main actor (largest face)
 
         Args:
-            video_path: Path to input video
+            video_path: Path to the video file
 
         Returns:
-            Number of unique faces found
+            Number of unique faces found (but only main actor will be swapped)
         """
-        print(f"Finding faces in video: {video_path}")
+        video_path = Path(video_path)
+        if not video_path.exists():
+            raise ValueError(f"Video file does not exist: {video_path}")
 
-        cap = cv2.VideoCapture(video_path)
+        print(f"\n🔍 Analyzing video for faces: {video_path.name}")
+        self.update_progress(25, "Analyzing video for faces...")
 
-        # Sample frames to find faces
+        # Open video
+        cap = cv2.VideoCapture(str(video_path))
         total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
-        sample_interval = max(1, total_frames // 20)  # Sample more frames for better detection
+        fps = cap.get(cv2.CAP_PROP_FPS)
 
-        # TWEAK: Lowered threshold for more robust face matching across frames
+        # Sample frames for face detection
+        sample_interval = max(1, int(fps * 2))  # Sample every 2 seconds
+        self.found_faces = []
+        face_sizes = []  # Track face sizes to identify main actor
+
+        # Variables for tracking faces
         threshold = 0.60
+        frames_analyzed = 0
+        max_frames_to_analyze = min(total_frames, 20 * sample_interval)
 
-        for i in range(0, min(total_frames, 20 * sample_interval), sample_interval):
+        for i in range(0, max_frames_to_analyze, sample_interval):
             cap.set(cv2.CAP_PROP_POS_FRAMES, i)
             ret, frame = cap.read()
             if not ret:
                 break
+
+            frames_analyzed += 1
 
             # Convert to RGB and tensor
             frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
@@ -157,11 +189,34 @@ class RopeCLI:
             for face_kps in kpss:
                 face_emb, cropped_img = self.models.run_recognize(img_tensor, face_kps)
 
+                # Calculate face size (bounding box area)
+                try:
+                    # Attempt to access bbox as a dictionary key, which is the expected format.
+                    bbox = face_kps['bbox']
+                except (IndexError, TypeError):
+                    # FALLBACK: If face_kps is a raw numpy array of keypoints (which causes an IndexError),
+                    # we derive the bounding box from the keypoints' min/max coordinates.
+                    # This handles inconsistencies in the data structure returned by the model.
+                    x_coords = face_kps[:, 0]
+                    y_coords = face_kps[:, 1]
+                    bbox = np.array([
+                        np.min(x_coords),
+                        np.min(y_coords),
+                        np.max(x_coords),
+                        np.max(y_coords)
+                    ])
+
+                face_area = (bbox[2] - bbox[0]) * (bbox[3] - bbox[1])
+
                 # Check if this face is already found
                 found = False
-                for existing_face in self.found_faces:
+                face_idx = -1
+                for idx, existing_face in enumerate(self.found_faces):
                     if self.findCosineDistance(existing_face['Embedding'], face_emb) >= threshold:
                         found = True
+                        face_idx = idx
+                        # Update average face size for this face
+                        face_sizes[idx].append(face_area)
                         break
 
                 # If new face, add to found faces
@@ -170,30 +225,63 @@ class RopeCLI:
                         'Embedding': face_emb,
                         'kps': face_kps
                     })
+                    face_sizes.append([face_area])
+
+            # Update progress
+            progress = 25 + (10 * frames_analyzed / (max_frames_to_analyze / sample_interval))
+            self.update_progress(progress, f"Analyzing faces... ({frames_analyzed} samples)")
 
         cap.release()
 
-        print(f"Found {len(self.found_faces)} unique face(s) in video")
+        # Identify the main actor (face with largest average size)
+        if self.found_faces:
+            avg_sizes = []
+            for idx, sizes in enumerate(face_sizes):
+                avg_size = np.mean(sizes)
+                avg_sizes.append((idx, avg_size))
+                print(f"  Face {idx}: Average size = {avg_size:.0f} pixels²")
 
-        # Create assignments - assign all source faces to all target faces
-        # This mimics selecting all faces in the GUI
-        for found_face in self.found_faces:
-            # Use all source embeddings cyclically
-            found_face['SourceFaceAssignments'] = self.source_embeddings
-            if self.source_embeddings:
-                # Use the first source as the assigned embedding
-                found_face['AssignedEmbedding'] = self.source_embeddings[0]['embedding']
+            # Sort by average size and get the largest
+            avg_sizes.sort(key=lambda x: x[1], reverse=True)
+            self.main_face_index = avg_sizes[0][0]
 
-        # Assign found faces to video manager (like GUI does)
-        self.video_manager.assign_found_faces(self.found_faces)
+            print(f"\n✓ Found {len(self.found_faces)} unique face(s) in video")
+            print(f"★ Main actor identified: Face #{self.main_face_index} (largest average size)")
 
-        return len(self.found_faces)
+            # Only assign source embeddings to the main actor's face
+            for idx, found_face in enumerate(self.found_faces):
+                if idx == self.main_face_index:
+                    # This is the main actor - assign source embeddings
+                    found_face['SourceFaceAssignments'] = self.source_embeddings
+                    if self.source_embeddings:
+                        # Calculate average embedding from all source faces
+                        embeddings_list = [d['embedding'] for d in self.source_embeddings]
+                        found_face['AssignedEmbedding'] = np.mean(embeddings_list, axis=0)
+                    print(f"  → Source face assigned to Face #{idx} (main actor)")
+                else:
+                    # Not the main actor - don't assign any source
+                    found_face['SourceFaceAssignments'] = []
+                    found_face['AssignedEmbedding'] = None
+                    print(f"  → Face #{idx} will not be swapped (supporting actor)")
 
-    def process_video(self, video_path, output_dir, quality=14, threads=2, codec='libx264', preset='slow'):
+            # Assign found faces to video manager
+            self.video_manager.assign_found_faces(self.found_faces)
+
+            self.update_progress(35, f"Identified main actor from {len(self.found_faces)} faces")
+            return len(self.found_faces)
+        else:
+            print("  No faces found in video")
+            self.update_progress(35, "No faces found in video")
+            return 0
+
+    def process_video(self, video_path, output_dir, quality=14, threads=2, codec='libx264', preset='slow', progress_callback=None):
         """
-        Process video with face swapping - WORKING VERSION
-        Uses the original swapping logic with enhanced quality settings
+        Process video with face swapping - only swaps the main actor's face
         """
+        # Update progress callback if provided
+        if progress_callback:
+            self.progress_callback = progress_callback
+
         video_path = Path(video_path)
         output_dir = Path(output_dir)
         output_dir.mkdir(parents=True, exist_ok=True)
@@ -207,20 +295,14 @@ class RopeCLI:
         print(f"\n🎬 Processing: {video_path.name}")
         print(f"  Output: {output_file.name}")
         print(f"  Quality: CRF={quality} (lower=better)")
-        print(f"  Found {len(self.found_faces)} target faces")
+        print(f"  Main actor face will be swapped")
+
+        self.update_progress(40, "Setting up video processing...")
 
         # Set up video manager for processing
         self.video_manager.load_target_video(str(video_path))
 
-        # Assign the found faces to video manager with source embeddings
-        for i, face in enumerate(self.found_faces):
-            # Assign average of source embeddings to each target face
-            if self.source_embeddings:
-                # FIX: Extract only the embedding arrays for np.mean
-                embeddings_list = [d['embedding'] for d in self.source_embeddings]
-                face['AssignedEmbedding'] = np.mean(embeddings_list, axis=0)
-                face['SourceFaceAssignments'] = list(range(len(self.source_embeddings)))
-
+        # The found_faces are already assigned with only main actor having source embeddings
         self.video_manager.assign_found_faces(self.found_faces)
 
         # Get video properties
@@ -277,7 +359,6 @@ class RopeCLI:
             'MergeTextSel': 'Mean',
         }
 
-
         self.video_manager.control = {
             'SwapFacesButton': True,
             'AudioButton': False,
@@ -309,7 +390,8 @@ class RopeCLI:
         process = subprocess.Popen(ffmpeg_args, stdin=subprocess.PIPE)
 
         # Process frames
-        print("\nProcessing frames...")
+        print("\nProcessing frames (swapping main actor only)...")
+        self.update_progress(45, "Processing video frames...")
         start_time = time.time()
 
         with tqdm(total=frame_count, desc="Deepfaking", unit="frames") as pbar:
@@ -326,6 +408,7 @@ class RopeCLI:
 
                 try:
                     # Apply face swapping using video manager's swap logic
+                    # This will only swap faces that have AssignedEmbedding (main actor only)
                     swapped_frame = self.video_manager.swap_video(frame_rgb, frame_num, use_markers=False)
 
                     # Convert RGB back to BGR for FFMPEG
@@ -340,6 +423,12 @@ class RopeCLI:
                 process.stdin.write(output_frame.tobytes())
 
                 pbar.update(1)
+
+                # Update progress through callback
+                video_progress = 45 + (45 * (frame_num + 1) / frame_count)
+                if frame_num % 10 == 0:  # Update every 10 frames to avoid too many updates
+                    self.update_progress(video_progress, f"Processing frame {frame_num + 1}/{frame_count}")
+
                 # Update progress stats
                 if frame_num % 30 == 0 and frame_num > 0:
                     elapsed = time.time() - start_time
@@ -357,6 +446,8 @@ class RopeCLI:
         # Release video manager capture
         if self.video_manager.capture:
             self.video_manager.capture.release()
+
+        self.update_progress(92, "Adding audio track...")
 
         # Add audio back with high quality
         print("\n🎵 Merging audio track...")
@@ -390,103 +481,9 @@ class RopeCLI:
         print(f"  Total time: {elapsed_total:.1f} seconds")
         print(f"  Average FPS: {frame_count / elapsed_total:.1f}")
 
+        self.update_progress(100, "Processing completed successfully!")
+
         return str(output_file)
-
-
-def swap_faces_in_frame(self, frame, frame_num):
-    """
-    Swap faces in a single frame
-
-    Args:
-        frame: The video frame (BGR format from OpenCV)
-        frame_num: Frame number for tracking
-
-    Returns:
-        Processed frame with swapped faces
-    """
-    # Convert BGR to RGB for processing
-    frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-
-    # Detect faces in current frame
-    faces = self.models.analyze_frame(frame_rgb)
-
-    if not faces:
-        # No faces detected in this frame, return original
-        return frame
-
-    # Process each detected face
-    for face in faces:
-        try:
-            # Find the best matching target face from our found_faces
-            best_match_idx = -1
-            best_similarity = -1
-
-            # Extract embedding for current face
-            current_embedding = self.models.get_embedding_from_face(frame_rgb, face)
-
-            # Find best matching target face
-            for idx, target_face in enumerate(self.found_faces):
-                similarity = self.findCosineDistance(current_embedding, target_face['Embedding'])
-                if similarity > best_similarity and similarity > 0.5:  # Threshold for matching
-                    best_similarity = similarity
-                    best_match_idx = idx
-
-            if best_match_idx >= 0:
-                # We found a matching face to swap
-                # Use the average of source embeddings for swapping
-                if self.source_embeddings:
-                    # Calculate average embedding from all source faces
-                    # FIX: Extract only the embedding arrays for np.mean
-                    embeddings_list = [d['embedding'] for d in self.source_embeddings]
-                    avg_embedding = np.mean(embeddings_list, axis=0)
-
-                    # Perform the face swap
-                    swapped_face = self.models.run_swapper(
-                        frame_rgb,
-                        face,
-                        avg_embedding
-                    )
-
-                    # Blend the swapped face back into the frame
-                    frame_rgb = self.models.blend_face(
-                        frame_rgb,
-                        swapped_face,
-                        face
-                    )
-
-        except Exception as e:
-            print(f"  Warning: Could not swap face {face.get('index', 'unknown')}: {e}")
-            continue
-
-    # Convert back to BGR for OpenCV/FFMPEG
-    return cv2.cvtColor(frame_rgb, cv2.COLOR_RGB2BGR)
-
-
-# Alternative simpler implementation that uses video_manager directly
-def swap_faces_in_frame_simple(self, frame, frame_num):
-    """
-    Simpler version that delegates to video_manager's swap logic
-    """
-    # Set up video manager state for this frame
-    self.video_manager.target_media = [None, str(self.current_video_path)]
-    self.video_manager.current_frame = frame_num
-
-    # Assign found faces to video manager
-    self.video_manager.assign_found_faces(self.found_faces)
-
-    # Convert frame to RGB
-    frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-
-    # Apply swapping through video manager
-    try:
-        # The video_manager expects RGB input and returns RGB output
-        swapped_frame = self.video_manager.swap_video(frame_rgb, frame_num, use_markers=False)
-
-        # Convert back to BGR for OpenCV
-        return cv2.cvtColor(swapped_frame, cv2.COLOR_RGB2BGR)
-    except Exception as e:
-        print(f"  Warning: Frame {frame_num} swap failed: {e}")
-        return frame
 
 
 def main():
@@ -522,7 +519,8 @@ def main():
         num_faces = cli.find_faces_in_video(args.video)
 
         if args.find_faces_only:
-            print(f"\nFound {num_faces} face(s) in video. Use without --find-faces-only to process.")
+            print(f"\nFound {num_faces} face(s) in video. Main actor identified.")
+            print("Use without --find-faces-only to process.")
             sys.exit(0)
 
         if num_faces == 0:
