@@ -2,117 +2,218 @@
 <html lang="en">
 <head>
     <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Rope Deepfake Studio - Enhanced</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+    <title>Rope Deepfake Studio</title>
     <style>
         * {
             margin: 0;
             padding: 0;
             box-sizing: border-box;
+            -webkit-tap-highlight-color: transparent;
         }
 
         body {
-            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, sans-serif;
-            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            background: linear-gradient(180deg, #1a1a2e 0%, #16213e 50%, #0f3460 100%);
+            min-height: 100vh;
+            color: #ffffff;
+            overflow-x: hidden;
+            touch-action: manipulation;
+        }
+
+        .app-container {
             min-height: 100vh;
             display: flex;
-            justify-content: center;
-            align-items: center;
-            padding: 20px;
+            flex-direction: column;
         }
 
-        .container {
-            background: rgba(255, 255, 255, 0.95);
+        .header {
+            background: rgba(0, 0, 0, 0.3);
             backdrop-filter: blur(10px);
-            border-radius: 20px;
-            box-shadow: 0 20px 60px rgba(0, 0, 0, 0.3);
-            max-width: 1200px;
-            width: 100%;
-            padding: 40px;
+            padding: 15px 20px;
+            text-align: center;
+            border-bottom: 1px solid rgba(255, 255, 255, 0.1);
         }
 
-        h1 {
-            color: #333;
-            text-align: center;
-            margin-bottom: 40px;
-            font-size: 2.5em;
+        .header h1 {
+            font-size: 1.8rem;
+            font-weight: 700;
             background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
             -webkit-background-clip: text;
             -webkit-text-fill-color: transparent;
+            margin: 0;
         }
 
-        .workflow {
-            display: grid;
-            grid-template-columns: repeat(auto-fit, minmax(350px, 1fr));
-            gap: 30px;
+        .view-container {
+            flex: 1;
+            position: relative;
+            overflow: hidden;
+        }
+
+        .view {
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            padding: 20px;
+            display: flex;
+            flex-direction: column;
+            transform: translateX(100%);
+            transition: transform 0.4s cubic-bezier(0.4, 0, 0.2, 1);
+            overflow-y: auto;
+        }
+
+        .view.active {
+            transform: translateX(0);
+        }
+
+        .view.prev {
+            transform: translateX(-100%);
+        }
+
+        /* VIEW 1: Video Selection */
+        .text-input-section {
             margin-bottom: 30px;
         }
 
-        .step {
-            background: white;
-            border-radius: 15px;
-            padding: 25px;
-            box-shadow: 0 5px 15px rgba(0, 0, 0, 0.1);
-            transition: transform 0.3s ease, box-shadow 0.3s ease;
-        }
-
-        .step:hover {
-            transform: translateY(-5px);
-            box-shadow: 0 10px 30px rgba(0, 0, 0, 0.15);
-        }
-
-        .step-number {
-            display: inline-block;
-            width: 30px;
-            height: 30px;
-            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-            color: white;
-            text-align: center;
-            line-height: 30px;
-            border-radius: 50%;
-            margin-right: 10px;
-            font-weight: bold;
-        }
-
-        .step h2 {
-            color: #333;
+        .text-input-label {
+            font-size: 1.1rem;
+            font-weight: 600;
             margin-bottom: 15px;
-            font-size: 1.3em;
+            color: #ffffff;
         }
 
-        .video-select {
+        .text-input {
             width: 100%;
-            padding: 12px;
-            border: 2px solid #e0e0e0;
-            border-radius: 8px;
-            font-size: 16px;
-            background: white;
-            transition: border-color 0.3s ease;
-            margin-bottom: 10px;
-        }
-
-        .video-select:focus {
+            padding: 20px;
+            border: 2px solid rgba(255, 255, 255, 0.2);
+            border-radius: 12px;
+            background: rgba(255, 255, 255, 0.1);
+            color: #ffffff;
+            font-size: 1.1rem;
+            backdrop-filter: blur(10px);
+            min-height: 120px;
+            resize: none;
             outline: none;
-            border-color: #667eea;
+            transition: all 0.3s ease;
         }
 
-        .video-info {
-            padding: 10px;
-            background: #f5f5f5;
-            border-radius: 8px;
-            font-size: 14px;
-            color: #666;
-            margin-top: 10px;
+        .text-input:focus {
+            border-color: #667eea;
+            background: rgba(255, 255, 255, 0.15);
+        }
+
+        .text-input::placeholder {
+            color: rgba(255, 255, 255, 0.6);
+        }
+
+        .generate-text-btn {
+            width: 100%;
+            padding: 18px;
+            margin-top: 15px;
+            border: none;
+            border-radius: 12px;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: #ffffff;
+            font-size: 1.1rem;
+            font-weight: 600;
+            opacity: 0.5;
+            cursor: not-allowed;
+            transition: all 0.3s ease;
+        }
+
+        .divider {
+            display: flex;
+            align-items: center;
+            margin: 30px 0;
+            color: rgba(255, 255, 255, 0.6);
+        }
+
+        .divider::before,
+        .divider::after {
+            content: '';
+            flex: 1;
+            height: 1px;
+            background: rgba(255, 255, 255, 0.2);
+        }
+
+        .divider span {
+            padding: 0 20px;
+            font-weight: 500;
+        }
+
+        .videos-section h2 {
+            font-size: 1.2rem;
+            font-weight: 600;
+            margin-bottom: 20px;
+            color: #ffffff;
+        }
+
+        .videos-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+            gap: 15px;
+            margin-bottom: 20px;
+        }
+
+        .video-card {
+            background: rgba(255, 255, 255, 0.1);
+            backdrop-filter: blur(10px);
+            border: 2px solid rgba(255, 255, 255, 0.2);
+            border-radius: 12px;
+            padding: 20px;
+            text-align: center;
+            cursor: pointer;
+            transition: all 0.3s ease;
+            touch-action: manipulation;
+            min-height: 120px;
+            display: flex;
+            flex-direction: column;
+            justify-content: center;
+        }
+
+        .video-card:active {
+            transform: scale(0.95);
+        }
+
+        .video-card.selected {
+            border-color: #667eea;
+            background: rgba(102, 126, 234, 0.2);
+        }
+
+        .video-card .video-name {
+            font-weight: 600;
+            margin-bottom: 8px;
+            word-break: break-word;
+        }
+
+        .video-card .video-info {
+            font-size: 0.9rem;
+            opacity: 0.8;
+        }
+
+        /* VIEW 2: Recording */
+        .recording-view {
+            justify-content: space-between;
+        }
+
+        .webcam-section {
+            flex: 1;
+            display: flex;
+            flex-direction: column;
+            margin-bottom: 20px;
         }
 
         .webcam-container {
             position: relative;
             width: 100%;
-            height: 280px;
+            flex: 1;
+            min-height: 400px;
             background: #000;
-            border-radius: 10px;
+            border-radius: 20px;
             overflow: hidden;
-            margin-bottom: 15px;
+            margin-bottom: 20px;
         }
 
         #webcam {
@@ -126,42 +227,73 @@
             align-items: center;
             justify-content: center;
             height: 100%;
-            color: white;
-            font-size: 18px;
+            color: rgba(255, 255, 255, 0.6);
+            font-size: 1.2rem;
             text-align: center;
-            padding: 20px;
+            padding: 40px;
+            flex-direction: column;
+        }
+
+        .webcam-placeholder .icon {
+            font-size: 4rem;
+            margin-bottom: 20px;
         }
 
         .recording-indicator {
             position: absolute;
-            top: 10px;
-            right: 10px;
-            background: red;
+            top: 20px;
+            right: 20px;
+            background: #ff4444;
             color: white;
-            padding: 5px 10px;
-            border-radius: 5px;
+            padding: 10px 20px;
+            border-radius: 25px;
             display: none;
             animation: pulse 1s infinite;
+            font-weight: 600;
         }
 
         @keyframes pulse {
-            0% { opacity: 1; }
-            50% { opacity: 0.5; }
-            100% { opacity: 1; }
+            0% { opacity: 1; transform: scale(1); }
+            50% { opacity: 0.7; transform: scale(1.05); }
+            100% { opacity: 1; transform: scale(1); }
+        }
+
+        .face-count {
+            text-align: center;
+            padding: 15px;
+            background: rgba(255, 255, 255, 0.1);
+            border-radius: 12px;
+            margin-bottom: 20px;
+            font-weight: 600;
+        }
+
+        .face-count.has-faces {
+            background: rgba(76, 175, 80, 0.2);
+            border: 2px solid rgba(76, 175, 80, 0.5);
+        }
+
+        .controls-section {
+            display: flex;
+            flex-direction: column;
+            gap: 15px;
         }
 
         .btn {
-            padding: 12px 30px;
+            padding: 20px;
             border: none;
-            border-radius: 8px;
-            font-size: 16px;
+            border-radius: 12px;
+            font-size: 1.2rem;
             font-weight: 600;
             cursor: pointer;
             transition: all 0.3s ease;
+            touch-action: manipulation;
+            width: 100%;
             text-transform: uppercase;
             letter-spacing: 0.5px;
-            width: 100%;
-            margin-bottom: 10px;
+        }
+
+        .btn:active {
+            transform: scale(0.95);
         }
 
         .btn-primary {
@@ -169,19 +301,9 @@
             color: white;
         }
 
-        .btn-primary:hover {
-            transform: translateY(-2px);
-            box-shadow: 0 5px 20px rgba(102, 126, 234, 0.4);
-        }
-
         .btn-danger {
             background: linear-gradient(135deg, #f93b1d 0%, #ea1e63 100%);
             color: white;
-        }
-
-        .btn-danger:hover {
-            transform: translateY(-2px);
-            box-shadow: 0 5px 20px rgba(249, 59, 29, 0.4);
         }
 
         .btn-success {
@@ -189,95 +311,62 @@
             color: white;
         }
 
-        .btn-success:hover {
-            transform: translateY(-2px);
-            box-shadow: 0 5px 20px rgba(0, 210, 255, 0.4);
-        }
-
         .btn:disabled {
-            opacity: 0.5;
+            opacity: 0.4;
             cursor: not-allowed;
             transform: none !important;
         }
 
-        .face-count {
+        /* VIEW 3: Results */
+        .results-view {
             text-align: center;
-            padding: 10px;
-            background: #f0f0f0;
-            border-radius: 8px;
-            margin-bottom: 10px;
-            font-weight: 600;
+            justify-content: center;
         }
 
-        .face-count.has-faces {
-            background: #d4edda;
-            color: #155724;
-        }
-
-        .quality-settings {
-            background: #f8f9fa;
-            border-radius: 8px;
-            padding: 15px;
-            margin-bottom: 15px;
-        }
-
-        .quality-settings label {
-            display: block;
-            margin-bottom: 5px;
-            color: #555;
-            font-weight: 500;
-        }
-
-        .quality-settings input[type="range"] {
-            width: 100%;
-            margin-bottom: 5px;
-        }
-
-        .quality-settings .value {
-            text-align: right;
-            color: #667eea;
-            font-weight: bold;
+        .status-section {
+            margin-bottom: 30px;
         }
 
         .status-message {
-            padding: 15px;
-            border-radius: 8px;
-            margin-top: 20px;
-            text-align: center;
+            padding: 20px;
+            border-radius: 12px;
+            margin-bottom: 20px;
+            font-size: 1.1rem;
+            font-weight: 500;
             display: none;
         }
 
         .status-message.info {
-            background: #cfe2ff;
-            color: #084298;
-            border: 1px solid #b6d4fe;
+            background: rgba(33, 150, 243, 0.2);
+            border: 2px solid rgba(33, 150, 243, 0.5);
+            color: #ffffff;
         }
 
         .status-message.success {
-            background: #d4edda;
-            color: #155724;
-            border: 1px solid #c3e6cb;
+            background: rgba(76, 175, 80, 0.2);
+            border: 2px solid rgba(76, 175, 80, 0.5);
+            color: #ffffff;
         }
 
         .status-message.error {
-            background: #f8d7da;
-            color: #721c24;
-            border: 1px solid #f5c6cb;
+            background: rgba(244, 67, 54, 0.2);
+            border: 2px solid rgba(244, 67, 54, 0.5);
+            color: #ffffff;
         }
 
         .status-message.processing {
-            background: #fff3cd;
-            color: #856404;
-            border: 1px solid #ffeeba;
+            background: rgba(255, 193, 7, 0.2);
+            border: 2px solid rgba(255, 193, 7, 0.5);
+            color: #ffffff;
         }
 
         .progress-bar {
             width: 100%;
-            height: 30px;
-            background: #e0e0e0;
-            border-radius: 15px;
+            height: 40px;
+            background: rgba(255, 255, 255, 0.1);
+            border-radius: 20px;
             overflow: hidden;
-            margin-top: 10px;
+            margin: 20px 0;
             display: none;
         }
 
@@ -290,108 +379,278 @@
             justify-content: center;
             color: white;
             font-weight: bold;
+            font-size: 1.1rem;
         }
 
         .download-section {
-            text-align: center;
-            margin-top: 20px;
+            margin-top: 30px;
             display: none;
         }
 
         .download-link {
             display: inline-block;
-            padding: 15px 40px;
+            padding: 20px 40px;
             background: linear-gradient(135deg, #11998e 0%, #38ef7d 100%);
             color: white;
             text-decoration: none;
-            border-radius: 8px;
+            border-radius: 12px;
+            font-weight: 600;
+            font-size: 1.2rem;
+            transition: all 0.3s ease;
+            touch-action: manipulation;
+        }
+
+        .download-link:active {
+            transform: scale(0.95);
+        }
+
+        /* Quality Settings */
+        .quality-settings {
+            background: rgba(255, 255, 255, 0.1);
+            backdrop-filter: blur(10px);
+            border-radius: 12px;
+            padding: 20px;
+            margin-bottom: 20px;
+        }
+
+        .quality-settings label {
+            display: block;
+            margin-bottom: 10px;
+            color: #ffffff;
+            font-weight: 500;
+            font-size: 1rem;
+        }
+
+        .quality-settings input[type="range"] {
+            width: 100%;
+            margin-bottom: 15px;
+            height: 8px;
+            border-radius: 4px;
+            background: rgba(255, 255, 255, 0.2);
+            outline: none;
+            -webkit-appearance: none;
+        }
+
+        .quality-settings input[type="range"]::-webkit-slider-thumb {
+            -webkit-appearance: none;
+            appearance: none;
+            width: 24px;
+            height: 24px;
+            border-radius: 50%;
+            background: #667eea;
+            cursor: pointer;
+        }
+
+        .quality-settings .value {
+            float: right;
+            color: #667eea;
             font-weight: bold;
+        }
+
+        .quality-settings select {
+            width: 100%;
+            padding: 15px;
+            border: 2px solid rgba(255, 255, 255, 0.2);
+            border-radius: 8px;
+            background: rgba(255, 255, 255, 0.1);
+            color: #ffffff;
+            font-size: 1rem;
+            outline: none;
+        }
+
+        .quality-settings small {
+            color: rgba(255, 255, 255, 0.7);
+            font-size: 0.9rem;
+        }
+
+        /* Navigation */
+        .nav-footer {
+            background: rgba(0, 0, 0, 0.3);
+            backdrop-filter: blur(10px);
+            padding: 15px 20px;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            border-top: 1px solid rgba(255, 255, 255, 0.1);
+        }
+
+        .nav-btn {
+            padding: 12px 24px;
+            border: 2px solid rgba(255, 255, 255, 0.3);
+            border-radius: 8px;
+            background: rgba(255, 255, 255, 0.1);
+            color: #ffffff;
+            font-weight: 600;
+            cursor: pointer;
+            transition: all 0.3s ease;
+            touch-action: manipulation;
+        }
+
+        .nav-btn:active {
+            transform: scale(0.95);
+        }
+
+        .nav-btn:disabled {
+            opacity: 0.3;
+            cursor: not-allowed;
+            transform: none !important;
+        }
+
+        .view-indicator {
+            display: flex;
+            gap: 8px;
+        }
+
+        .view-dot {
+            width: 12px;
+            height: 12px;
+            border-radius: 50%;
+            background: rgba(255, 255, 255, 0.3);
             transition: all 0.3s ease;
         }
 
-        .download-link:hover {
-            transform: translateY(-2px);
-            box-shadow: 0 5px 20px rgba(17, 153, 142, 0.4);
+        .view-dot.active {
+            background: #667eea;
+            transform: scale(1.2);
         }
 
-        @media (max-width: 768px) {
-            .workflow {
+        /* Responsive Design */
+        @media (max-width: 480px) {
+            .header h1 {
+                font-size: 1.5rem;
+            }
+
+            .videos-grid {
                 grid-template-columns: 1fr;
             }
 
-            h1 {
-                font-size: 2em;
+            .view {
+                padding: 15px;
+            }
+        }
+
+        @media (min-width: 768px) {
+            .videos-grid {
+                grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
+            }
+        }
+
+        @media (min-width: 1024px) {
+            .videos-grid {
+                grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
             }
         }
     </style>
 </head>
 <body>
-    <div class="container">
-        <h1>🎭 Rope Deepfake Studio</h1>
+    <div class="app-container">
+        <div class="header">
+            <h1>🎭 Rope Deepfake Studio</h1>
+        </div>
 
-        <div class="workflow">
-            <!-- Step 1: Select Video -->
-            <div class="step">
-                <h2><span class="step-number">1</span>Select Base Video</h2>
-                <select id="videoSelect" class="video-select">
-                    <option value="">Loading videos...</option>
-                </select>
-                <div id="videoInfo" class="video-info" style="display:none;"></div>
-            </div>
+        <div class="view-container">
+            <!-- VIEW 1: Video Selection -->
+            <div class="view active" data-view="1">
+                <div class="text-input-section">
+                    <div class="text-input-label">📝 Generate from Text (Coming Soon)</div>
+                    <textarea
+                        class="text-input"
+                        placeholder="Describe the video you want to generate... (This feature will be available soon)"
+                        disabled
+                    ></textarea>
+                    <button class="generate-text-btn" disabled>
+                        Generate Text-to-Video (Coming Soon)
+                    </button>
+                </div>
 
-            <!-- Step 2: Capture Face -->
-            <div class="step">
-                <h2><span class="step-number">2</span>Record Your Face</h2>
-                <div class="webcam-container">
-                    <video id="webcam" style="display:none;"></video>
-                    <div class="webcam-placeholder" id="webcamPlaceholder">
-                        📷 Click "Start Recording" to capture your face
+                <div class="divider">
+                    <span>OR</span>
+                </div>
+
+                <div class="videos-section">
+                    <h2>🎬 Select a Base Video</h2>
+                    <div class="videos-grid" id="videosGrid">
+                        <!-- Videos will be loaded here -->
                     </div>
-                    <div class="recording-indicator" id="recordingIndicator">● RECORDING</div>
                 </div>
-                <div id="faceCount" class="face-count">No faces captured</div>
-                <button id="startRecording" class="btn btn-primary">Start Recording (5 sec)</button>
-                <button id="clearFaces" class="btn btn-danger">Clear All Faces</button>
             </div>
 
-            <!-- Step 3: Generate Deepfake -->
-            <div class="step">
-                <h2><span class="step-number">3</span>Generate Deepfake</h2>
+            <!-- VIEW 2: Recording & Generation -->
+            <div class="view" data-view="2">
+                <div class="webcam-section">
+                    <div class="webcam-container">
+                        <video id="webcam" style="display:none;"></video>
+                        <div class="webcam-placeholder" id="webcamPlaceholder">
+                            <div class="icon">📷</div>
+                            <div>Tap "Start Recording" to capture your face</div>
+                        </div>
+                        <div class="recording-indicator" id="recordingIndicator">● RECORDING</div>
+                    </div>
 
-                <div class="quality-settings">
-                    <label for="qualitySlider">Quality (CRF): <span class="value" id="qualityValue">14</span></label>
-                    <input type="range" id="qualitySlider" min="10" max="30" value="14" step="1">
-                    <small>Lower = Better Quality (but larger file)</small>
-
-                    <label for="threadsSlider" style="margin-top:10px;">Processing Threads: <span class="value" id="threadsValue">4</span></label>
-                    <input type="range" id="threadsSlider" min="1" max="8" value="4" step="1">
-
-                    <label for="presetSelect" style="margin-top:10px;">Encoding Preset:</label>
-                    <select id="presetSelect" class="video-select" style="margin-top:5px;">
-                        <option value="ultrafast">Ultra Fast (lower quality)</option>
-                        <option value="fast">Fast</option>
-                        <option value="medium">Medium</option>
-                        <option value="slow" selected>Slow (better quality)</option>
-                        <option value="veryslow">Very Slow (best quality)</option>
-                    </select>
+                    <div id="faceCount" class="face-count">No faces captured</div>
                 </div>
 
-                <button id="generateDeepfake" class="btn btn-success" disabled>Generate Deepfake Video</button>
+                <div class="controls-section">
+                    <button id="startRecording" class="btn btn-primary">Start Recording (5 sec)</button>
+                    <button id="clearFaces" class="btn btn-danger">Clear All Faces</button>
 
-                <div class="progress-bar" id="progressBar">
-                    <div class="progress-fill" id="progressFill" style="width: 0%;">0%</div>
+                    <div class="quality-settings">
+                        <label for="qualitySlider">Quality (CRF): <span class="value" id="qualityValue">14</span></label>
+                        <input type="range" id="qualitySlider" min="10" max="30" value="14" step="1">
+                        <small>Lower = Better Quality (but larger file)</small>
+
+                        <label for="threadsSlider" style="margin-top:15px;">Processing Threads: <span class="value" id="threadsValue">4</span></label>
+                        <input type="range" id="threadsSlider" min="1" max="8" value="4" step="1">
+
+                        <label for="presetSelect" style="margin-top:15px;">Encoding Preset:</label>
+                        <select id="presetSelect" class="video-select" style="margin-top:5px;">
+                            <option value="ultrafast">Ultra Fast (lower quality)</option>
+                            <option value="fast">Fast</option>
+                            <option value="medium">Medium</option>
+                            <option value="slow" selected>Slow (better quality)</option>
+                            <option value="veryslow">Very Slow (best quality)</option>
+                        </select>
+                    </div>
+
+                    <button id="generateDeepfake" class="btn btn-success" disabled>Generate Deepfake Video</button>
+                </div>
+            </div>
+
+            <!-- VIEW 3: Results -->
+            <div class="view" data-view="3">
+                <div class="results-view">
+                    <div class="status-section">
+                        <h2>🎥 Processing Results</h2>
+                        <div id="statusMessage" class="status-message"></div>
+                        <div class="progress-bar" id="progressBar">
+                            <div class="progress-fill" id="progressFill" style="width: 0%;">0%</div>
+                        </div>
+                    </div>
+
+                    <div id="downloadSection" class="download-section">
+                        <h3>🎉 Your deepfake is ready!</h3>
+                        <a id="downloadLink" class="download-link" href="#" download>
+                            📥 Download Video
+                        </a>
+                    </div>
                 </div>
             </div>
         </div>
 
-        <div id="statusMessage" class="status-message"></div>
+        <div class="nav-footer">
+            <button class="nav-btn" id="prevBtn" disabled>← Previous</button>
 
-        <div id="downloadSection" class="download-section">
-            <h3>🎉 Your deepfake is ready!</h3>
-            <a id="downloadLink" class="download-link" href="#" download>Download Video</a>
+            <div class="view-indicator">
+                <div class="view-dot active" data-dot="1"></div>
+                <div class="view-dot" data-dot="2"></div>
+                <div class="view-dot" data-dot="3"></div>
+            </div>
+
+            <button class="nav-btn" id="nextBtn">Next →</button>
         </div>
     </div>
 
+    <script src="/static/app.js"></script>
     <script>
         let isRecording = false;
         let mediaRecorder = null;
@@ -399,6 +658,8 @@
         let recordingTimeout = null;
         let currentJobId = null;
         let ws = null;
+        let selectedVideo = null;
+        let currentView = 1;
 
         // Initialize WebSocket for real-time updates
         function initWebSocket() {
@@ -406,20 +667,81 @@
 
             ws.onmessage = (event) => {
                 const data = JSON.parse(event.data);
+                console.log('WebSocket message received:', data); // Debug log
+
                 if (data.type === 'status_update' && data.job_id === currentJobId) {
+                    // The status is nested under data.status
                     updateProcessingStatus(data.status);
                 }
             };
 
-            ws.onerror = () => {
-                console.error('WebSocket error');
+            ws.onerror = (error) => {
+                console.error('WebSocket error:', error);
             };
 
             ws.onclose = () => {
-                // Reconnect after 3 seconds
+                console.log('WebSocket closed, reconnecting...');
                 setTimeout(initWebSocket, 3000);
             };
         }
+
+        // View Management
+        function switchToView(viewNumber) {
+            if (viewNumber < 1 || viewNumber > 3) return;
+
+            // Update view classes
+            document.querySelectorAll('.view').forEach((view, index) => {
+                view.classList.remove('active', 'prev');
+                if (index + 1 === viewNumber) {
+                    view.classList.add('active');
+                } else if (index + 1 < viewNumber) {
+                    view.classList.add('prev');
+                }
+            });
+
+            // Update dots
+            document.querySelectorAll('.view-dot').forEach((dot, index) => {
+                dot.classList.toggle('active', index + 1 === viewNumber);
+            });
+
+            // Update navigation buttons - Always disable back button
+            const prevBtn = document.getElementById('prevBtn');
+            const nextBtn = document.getElementById('nextBtn');
+
+            prevBtn.disabled = true; // Always disabled as requested
+            nextBtn.disabled = viewNumber === 3;
+
+            if (viewNumber === 2) {
+                nextBtn.textContent = 'Process →';
+            } else {
+                nextBtn.textContent = 'Next →';
+            }
+
+            currentView = viewNumber;
+        }
+
+        // Navigation event listeners
+        document.getElementById('prevBtn').addEventListener('click', () => {
+            // Disable back button functionality
+            return;
+        });
+
+        document.getElementById('nextBtn').addEventListener('click', () => {
+            if (currentView === 1 && !selectedVideo) {
+                showStatus('Please select a video first', 'error');
+                return;
+            }
+            if (currentView === 2) {
+                // Go to results view and start processing if ready
+                switchToView(3);
+                const facesReady = document.getElementById('faceCount').classList.contains('has-faces');
+                if (selectedVideo && facesReady) {
+                    generateDeepfake();
+                }
+            } else if (currentView < 3) {
+                switchToView(currentView + 1);
+            }
+        });
 
         // Load available videos
         async function loadVideos() {
@@ -427,23 +749,49 @@
                 const response = await fetch('/api/videos');
                 const data = await response.json();
 
-                const select = document.getElementById('videoSelect');
-                select.innerHTML = '<option value="">-- Select a video --</option>';
-
-                data.videos.forEach(video => {
-                    const option = document.createElement('option');
-                    option.value = video.filename;
-                    option.textContent = video.filename;
-                    select.appendChild(option);
-                });
+                const grid = document.getElementById('videosGrid');
+                grid.innerHTML = '';
 
                 if (data.videos.length === 0) {
-                    select.innerHTML = '<option value="">No videos found in ../videos</option>';
+                    grid.innerHTML = '<div style="grid-column: 1/-1; text-align: center; color: rgba(255,255,255,0.6); padding: 40px;">No videos found in ../videos folder</div>';
+                    return;
                 }
+
+                data.videos.forEach(video => {
+                    const card = document.createElement('div');
+                    card.className = 'video-card';
+                    card.dataset.filename = video.filename;
+
+                    const sizeInMB = (video.size / (1024 * 1024)).toFixed(1);
+
+                    card.innerHTML = `
+                        <div class="video-name">${video.filename}</div>
+                        <div class="video-info">${sizeInMB} MB</div>
+                    `;
+
+                    card.addEventListener('click', () => selectVideo(video.filename, card));
+                    grid.appendChild(card);
+                });
             } catch (error) {
                 console.error('Error loading videos:', error);
                 showStatus('Error loading videos', 'error');
             }
+        }
+
+        // Select video
+        function selectVideo(filename, cardElement) {
+            // Remove previous selection
+            document.querySelectorAll('.video-card').forEach(card => {
+                card.classList.remove('selected');
+            });
+
+            // Add selection to clicked card
+            cardElement.classList.add('selected');
+            selectedVideo = filename;
+
+            // Update status
+            showStatus(`Selected: ${filename}`, 'info');
+            checkReadyToGenerate();
         }
 
         // Update face count
@@ -468,9 +816,8 @@
 
         // Check if ready to generate
         function checkReadyToGenerate() {
-            const videoSelected = document.getElementById('videoSelect').value !== '';
+            const videoSelected = selectedVideo !== null;
             const facesReady = document.getElementById('faceCount').classList.contains('has-faces');
-
             document.getElementById('generateDeepfake').disabled = !(videoSelected && facesReady);
         }
 
@@ -504,10 +851,8 @@
             const stream = await initWebcam();
             if (!stream) return;
 
-            // Clear existing faces first
             await clearFaces(false);
 
-            // Show webcam
             document.getElementById('webcam').style.display = 'block';
             document.getElementById('webcamPlaceholder').style.display = 'none';
             document.getElementById('recordingIndicator').style.display = 'block';
@@ -515,7 +860,6 @@
             isRecording = true;
             recordedChunks = [];
 
-            // Capture frames every 500ms for 5 seconds
             const frames = [];
             const canvas = document.createElement('canvas');
             const video = document.getElementById('webcam');
@@ -530,11 +874,10 @@
                 frames.push(canvas.toDataURL('image/jpeg', 0.9));
                 frameCount++;
 
-                // Update button text
                 const remaining = 5 - Math.floor(frameCount / 2);
                 document.getElementById('startRecording').textContent = `Recording... (${remaining}s)`;
 
-                if (frameCount >= 10) { // 10 frames over 5 seconds
+                if (frameCount >= 10) {
                     clearInterval(captureInterval);
                     stopRecording(frames);
                 }
@@ -545,7 +888,6 @@
         async function stopRecording(frames) {
             isRecording = false;
 
-            // Hide webcam
             const video = document.getElementById('webcam');
             const stream = video.srcObject;
             if (stream) {
@@ -555,10 +897,8 @@
             document.getElementById('webcamPlaceholder').style.display = 'flex';
             document.getElementById('recordingIndicator').style.display = 'none';
 
-            // Reset button
             document.getElementById('startRecording').textContent = 'Start Recording (5 sec)';
 
-            // Send frames to server
             showStatus('Processing captured frames...', 'processing');
 
             try {
@@ -607,20 +947,19 @@
 
         // Generate deepfake
         async function generateDeepfake() {
-            const videoFile = document.getElementById('videoSelect').value;
             const quality = document.getElementById('qualitySlider').value;
             const threads = document.getElementById('threadsSlider').value;
             const preset = document.getElementById('presetSelect').value;
 
-            if (!videoFile) {
+            if (!selectedVideo) {
                 showStatus('Please select a video', 'error');
                 return;
             }
 
-            // Disable button
-            document.getElementById('generateDeepfake').disabled = true;
+            // Automatically switch to results view
+            switchToView(3);
 
-            // Show progress
+            document.getElementById('generateDeepfake').disabled = true;
             document.getElementById('progressBar').style.display = 'block';
             document.getElementById('downloadSection').style.display = 'none';
             updateProgress(0);
@@ -629,7 +968,7 @@
 
             try {
                 const formData = new FormData();
-                formData.append('video_file', videoFile);
+                formData.append('video_file', selectedVideo);
                 formData.append('quality', quality);
                 formData.append('threads', threads);
                 formData.append('preset', preset);
@@ -640,13 +979,14 @@
                 });
 
                 const data = await response.json();
+                console.log('Deepfake generation started:', data); // Debug log
 
                 if (response.ok) {
                     currentJobId = data.job_id;
                     showStatus('Processing video... This may take several minutes.', 'processing');
 
-                    // Start polling for status
-                    pollJobStatus(data.job_id);
+                    // Start backup polling in case WebSocket fails
+                    setTimeout(() => pollJobStatus(currentJobId), 5000);
                 } else {
                     showStatus(data.detail || 'Error starting processing', 'error');
                     document.getElementById('generateDeepfake').disabled = false;
@@ -654,68 +994,132 @@
                 }
             } catch (error) {
                 console.error('Error generating deepfake:', error);
-                showStatus('Error generating deepfake', 'error');
+                showStatus('Error starting deepfake generation', 'error');
                 document.getElementById('generateDeepfake').disabled = false;
                 document.getElementById('progressBar').style.display = 'none';
             }
         }
 
-        // Poll job status
+        // Backup polling function in case WebSocket fails
         async function pollJobStatus(jobId) {
+            if (!jobId || jobId !== currentJobId) return; // Stop polling if job changed
+
             try {
                 const response = await fetch(`/api/status/${jobId}`);
-                const data = await response.json();
+                if (response.ok) {
+                    const data = await response.json();
+                    console.log('Polling status:', data); // Debug log
+                    updateProcessingStatus(data);
 
-                updateProcessingStatus(data);
-
-                if (data.status === 'processing' || data.status === 'queued') {
-                    // Continue polling
-                    setTimeout(() => pollJobStatus(jobId), 2000);
+                    // Continue polling if still processing
+                    if (data.status === 'processing' || data.status === 'queued') {
+                        setTimeout(() => pollJobStatus(jobId), 3000);
+                    }
+                } else {
+                    console.error('Failed to poll status:', response.status);
+                    setTimeout(() => pollJobStatus(jobId), 5000);
                 }
             } catch (error) {
                 console.error('Error polling status:', error);
-                setTimeout(() => pollJobStatus(jobId), 2000);
+                setTimeout(() => pollJobStatus(jobId), 5000);
             }
         }
 
         // Update processing status
         function updateProcessingStatus(status) {
-            if (status.status === 'completed') {
-                updateProgress(100);
-                showStatus('Deepfake generation completed!', 'success');
+            console.log('Processing status update:', status); // Debug log
 
-                // Show download link
+            // Handle progress updates from backend
+            if (status.progress !== undefined && status.progress !== null) {
+                // Ensure progress is a number and within 0-100 range
+                let progress = parseFloat(status.progress);
+                if (isNaN(progress)) progress = 0;
+                progress = Math.max(0, Math.min(100, progress));
+
+                console.log(`Updating progress to: ${progress}%`); // Debug log
+                updateProgress(progress);
+            }
+
+            // Handle status messages from backend
+            if (status.message) {
+                showStatus(status.message, 'processing');
+            }
+
+            // Handle completion status
+            if (status.status === 'completed') {
+                console.log('Job completed! Setting up download...'); // Debug log
+                updateProgress(100);
+                showStatus('Video processing completed successfully!', 'success');
+
+                // Show download section with proper link
                 const downloadSection = document.getElementById('downloadSection');
                 const downloadLink = document.getElementById('downloadLink');
-                downloadLink.href = `/api/download/${status.output_file}`;
-                downloadSection.style.display = 'block';
 
-                // Re-enable generate button
+                if (status.output_file) {
+                    downloadLink.href = `/api/download/${status.output_file}`;
+                    downloadLink.download = status.output_file;
+                    console.log(`Download link set to: /api/download/${status.output_file}`); // Debug log
+                } else {
+                    console.error('No output_file in completed status:', status);
+                }
+
+                downloadSection.style.display = 'block';
+                document.getElementById('progressBar').style.display = 'none';
+
+                // Re-enable generate button for next use
                 document.getElementById('generateDeepfake').disabled = false;
                 currentJobId = null;
+            }
 
-            } else if (status.status === 'failed') {
-                showStatus(status.message, 'error');
+            // Handle error status
+            if (status.status === 'failed' || status.status === 'error') {
+                console.log('Job failed:', status); // Debug log
+                showStatus(status.message || 'Processing error occurred', 'error');
                 document.getElementById('generateDeepfake').disabled = false;
                 document.getElementById('progressBar').style.display = 'none';
                 currentJobId = null;
-
-            } else if (status.status === 'processing') {
-                // Update progress if available
-                if (status.progress) {
-                    updateProgress(status.progress);
-                }
-                if (status.message) {
-                    showStatus(status.message, 'processing');
-                }
             }
         }
 
         // Update progress bar
         function updateProgress(percent) {
+            // Ensure percent is a valid number
+            percent = parseFloat(percent) || 0;
+            percent = Math.max(0, Math.min(100, percent));
+
             const fill = document.getElementById('progressFill');
+            if (!fill) return;
+
+            // Smooth animation for progress updates
+            fill.style.transition = 'width 0.5s ease-out';
             fill.style.width = `${percent}%`;
-            fill.textContent = `${Math.round(percent)}%`;
+
+            // Update text content with percentage
+            const displayPercent = Math.round(percent);
+            fill.textContent = `${displayPercent}%`;
+
+            // Add visual feedback for different progress ranges
+            if (percent === 0) {
+                fill.style.background = 'linear-gradient(90deg, #667eea, #764ba2)';
+            } else if (percent < 25) {
+                fill.style.background = 'linear-gradient(90deg, #667eea, #764ba2)';
+                fill.textContent = `${displayPercent}% - Initializing...`;
+            } else if (percent < 50) {
+                fill.style.background = 'linear-gradient(90deg, #667eea, #764ba2)';
+                fill.textContent = `${displayPercent}% - Processing faces...`;
+            } else if (percent < 75) {
+                fill.style.background = 'linear-gradient(90deg, #00d2ff, #3a7bd5)';
+                fill.textContent = `${displayPercent}% - Generating video...`;
+            } else if (percent < 100) {
+                fill.style.background = 'linear-gradient(90deg, #11998e, #38ef7d)';
+                fill.textContent = `${displayPercent}% - Finalizing...`;
+            } else {
+                fill.style.background = 'linear-gradient(90deg, #11998e, #38ef7d)';
+                fill.textContent = `100% - Complete!`;
+            }
+
+            // Log progress for debugging
+            console.log(`Progress updated: ${displayPercent}%`);
         }
 
         // Show status message
@@ -733,23 +1137,10 @@
         }
 
         // Event listeners
-        document.getElementById('videoSelect').addEventListener('change', (e) => {
-            const videoInfo = document.getElementById('videoInfo');
-            if (e.target.value) {
-                videoInfo.style.display = 'block';
-                videoInfo.textContent = `Selected: ${e.target.value}`;
-                checkReadyToGenerate();
-            } else {
-                videoInfo.style.display = 'none';
-                checkReadyToGenerate();
-            }
-        });
-
         document.getElementById('startRecording').addEventListener('click', startRecording);
         document.getElementById('clearFaces').addEventListener('click', () => clearFaces(true));
         document.getElementById('generateDeepfake').addEventListener('click', generateDeepfake);
 
-        // Quality sliders
         document.getElementById('qualitySlider').addEventListener('input', (e) => {
             document.getElementById('qualityValue').textContent = e.target.value;
         });
