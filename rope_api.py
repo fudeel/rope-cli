@@ -2,19 +2,17 @@ import asyncio
 import uuid
 import base64
 from pathlib import Path
-from typing import List, Optional
+from typing import List
 from datetime import datetime
 import cv2
 import numpy as np
 from contextlib import asynccontextmanager
-
-from fastapi import FastAPI, HTTPException, Form, WebSocket, WebSocketDisconnect, UploadFile, File
+from fastapi import FastAPI, HTTPException, Form, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.templating import Jinja2Templates
 from fastapi import Request
-from pydantic import BaseModel
 import uvicorn
 
 # Import the CLI module
