@@ -13,6 +13,8 @@ import torch
 import cv2
 from math import ceil
 import torchvision
+from tqdm import tqdm
+
 torchvision.disable_beta_transforms_warning()
 from torchvision.transforms import v2
 
@@ -189,185 +191,159 @@ class RopeCLI:
 
         return len(self.found_faces)
 
-    def process_video(self, input_video, output_dir, quality=16, threads=2):
+    def process_video(self, video_path, output_dir, quality=14, threads=2, codec='libx264', preset='slow'):
         """
-        Process video with face swapping
-
-        Args:
-            input_video: Path to input video
-            output_dir: Directory for output
-            quality: Video encoding quality (CRF value)
-            threads: Number of processing threads
-
-        Returns:
-            Path to output video
+        Process video with face swapping - WORKING VERSION
+        Uses the original swapping logic with enhanced quality settings
         """
-        # Create output directory
-        output_path = Path(output_dir)
-        output_path.mkdir(parents=True, exist_ok=True)
+        video_path = Path(video_path)
+        output_dir = Path(output_dir)
+        output_dir.mkdir(parents=True, exist_ok=True)
 
         # Generate output filename
-        input_name = Path(input_video).stem
-        timestamp = int(time.time())
-        output_file = output_path / f"{input_name}_swapped_{timestamp}.mp4"
+        timestamp = time.strftime("%Y%m%d_%H%M%S")
+        output_name = f"{video_path.stem}_deepfake_{timestamp}{video_path.suffix}"
+        output_file = output_dir / output_name
+        temp_file = output_dir / f"temp_{output_name}"
 
-        print(f"\nProcessing video: {input_video}")
-        print(f"Output directory: {output_dir}")
-        print(f"Quality: {quality}, Threads: {threads}")
+        print(f"\n🎬 Processing: {video_path.name}")
+        print(f"  Output: {output_file.name}")
+        print(f"  Quality: CRF={quality} (lower=better)")
+        print(f"  Found {len(self.found_faces)} target faces")
 
-        # Open video
-        cap = cv2.VideoCapture(input_video)
+        # Set up video manager for processing
+        self.video_manager.load_target_video(str(video_path))
+
+        # Assign the found faces to video manager with source embeddings
+        for i, face in enumerate(self.found_faces):
+            # Assign average of source embeddings to each target face
+            if self.source_embeddings:
+                face['AssignedEmbedding'] = np.mean(self.source_embeddings, axis=0)
+                face['SourceFaceAssignments'] = list(range(len(self.source_embeddings)))
+
+        self.video_manager.assign_found_faces(self.found_faces)
+
+        # Get video properties
+        cap = cv2.VideoCapture(str(video_path))
         fps = cap.get(cv2.CAP_PROP_FPS)
+        frame_count = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
         width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
         height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
-        frame_count = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+        cap.release()
 
-        print(f"Video info: {width}x{height} @ {fps}fps, {frame_count} frames")
-
-        # Create temporary output file (without audio)
-        temp_file = output_path / f"temp_{timestamp}.mp4"
-
-        # Setup video writer with x264 codec
-        fourcc = cv2.VideoWriter_fourcc(*'mp4v')
-        out = cv2.VideoWriter(str(temp_file), fourcc, fps, (width, height))
-
-        # TWEAK: Upped quality settings for better visual output
-        parameters = {
-            # Detection settings
-            'DetectTypeTextSel': 'Retinaface',
-            'DetectScoreSlider': 30,
-            'ThresholdSlider': 60,
-
-            # Basic swapper settings
-            'SwapperTypeTextSel': '256', # Upped to 256 for higher quality swap
-
-            # Feature switches
-            'FaceAdjSwitch': False,
-            'StrengthSwitch': True,
-            'ColorSwitch': False,
-            'RestorerSwitch': True, # Enabled Face Restore for better quality
-            'FaceParserSwitch': False,
-            'MouthParserSwitch': False,
-            'OccluderSwitch': False,
-            'DiffSwitch': False,
+        # Set parameters for swapping
+        self.video_manager.parameters = {
+            'SwapFacesButton': True,
+            'StrengthSlider': 1.0,
+            'ThreadsSlider': threads,
+            'NumFacesSlider': 5,
+            'FaceSearchSlider': 0.6,
+            'MaskViewButton': False,
+            'CLIP_text': '',
             'CLIPSwitch': False,
-            'OrientSwitch': False,
-
-            # Sliders with default values
-            'BorderTopSlider': 0,
-            'BorderBottomSlider': 0,
-            'BorderSidesSlider': 0,
-            'BorderBlurSlider': 6,
-            'BlendSlider': 10,
-            'ColorRedSlider': 0,
-            'ColorGreenSlider': 0,
-            'ColorBlueSlider': 0,
-            'ColorGammaSlider': 1.0,
-            'DiffSlider': 0,
-            'FaceParserSlider': 0,
-            'MouthParserSlider': 0,
-            'FaceScaleSlider': 0,
-            'KPSScaleSlider': 0,
-            'KPSXSlider': 0,
-            'KPSYSlider': 0,
-            'OccluderSlider': 0,
-            'OrientSlider': 0,
-            'RestorerSlider': 90, # Favor the restored face
-            'StrengthSlider': 125, # Slightly increased strength
-            'CLIPSlider': 0,
-            'CLIPTextEntry': '',
-            'RestorerTypeTextSel': 'GFPGAN',
-            'RestorerDetTypeTextSel': 'Reference'
+            'MergeTextSel': 'Mean'
         }
 
-        control = {
-            'MaskViewButton': False
+        self.video_manager.control = {
+            'SwapFacesButton': True,
+            'AudioButton': False
         }
 
+        # Create FFMPEG process for output with enhanced quality
+        ffmpeg_args = [
+            "ffmpeg",
+            '-hide_banner',
+            '-loglevel', 'error',
+            '-y',
+            '-f', 'rawvideo',
+            '-vcodec', 'rawvideo',
+            '-s', f'{width}x{height}',
+            '-pix_fmt', 'bgr24',
+            '-r', str(fps),
+            '-i', '-',
+            '-an',
+            '-c:v', codec,
+            '-preset', preset,
+            '-crf', str(quality),
+            '-pix_fmt', 'yuv420p',
+            '-movflags', '+faststart',
+            '-tune', 'film',
+            str(temp_file)
+        ]
+
+        process = subprocess.Popen(ffmpeg_args, stdin=subprocess.PIPE)
+
+        # Process frames
         print("\nProcessing frames...")
         start_time = time.time()
 
-        # Process each frame
-        for frame_idx in range(frame_count):
-            ret, frame = cap.read()
-            if not ret:
-                break
+        with tqdm(total=frame_count, desc="Deepfaking", unit="frames") as pbar:
+            for frame_num in range(frame_count):
+                # Get frame through video manager
+                self.video_manager.capture.set(cv2.CAP_PROP_POS_FRAMES, frame_num)
+                ret, frame = self.video_manager.capture.read()
 
-            # Convert to RGB
-            frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+                if not ret:
+                    break
 
-            # Convert to tensor (following VideoManager pattern)
-            img = torch.from_numpy(frame_rgb.astype('uint8')).cuda()
-            img = img.permute(2, 0, 1)  # HWC to CHW
+                # Convert BGR to RGB for processing
+                frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
 
-            # Detect faces in current frame
-            kpss = self.models.run_detect(img, max_num=20, score=parameters['DetectScoreSlider']/100.0)
+                try:
+                    # Apply face swapping using video manager's swap logic
+                    swapped_frame = self.video_manager.swap_video(frame_rgb, frame_num, marker=False)
 
-            # Get embeddings for all faces in frame
-            faces_in_frame = []
-            for face_kps in kpss:
-                face_emb, _ = self.models.run_recognize(img, face_kps)
-                faces_in_frame.append({'kps': face_kps, 'embedding': face_emb})
+                    # Convert RGB back to BGR for FFMPEG
+                    output_frame = cv2.cvtColor(swapped_frame, cv2.COLOR_RGB2BGR)
 
-            if faces_in_frame and self.found_faces:
-                # Process faces (following VideoManager logic)
-                for fface in faces_in_frame:
-                    # Find a matching face from the initial scan
-                    for found_face in self.found_faces:
-                        if self.findCosineDistance(fface['embedding'], found_face['embedding']) >= parameters['ThresholdSlider']/100.0:
-                            # Use the assigned source embedding for this found face
-                            if found_face.get('AssignedEmbedding') is not None:
-                                s_e = found_face['AssignedEmbedding']
+                except Exception as e:
+                    # If swapping fails, use original frame
+                    print(f"\n  Warning: Error processing frame {frame_num}: {e}")
+                    output_frame = frame
 
-                                # Swap the face using swap_core
-                                try:
-                                    img = self.video_manager.swap_core(img, fface['kps'], s_e, parameters, control)
-                                    # Once swapped, move to the next detected face in the frame
-                                    break
-                                except Exception as e:
-                                    print(f"\nWarning: Swap failed for a face in frame {frame_idx}: {e}")
-                                    pass
+                # Write to FFMPEG
+                process.stdin.write(output_frame.tobytes())
 
-            # Convert back to HWC for writing
-            img_np = img.permute(1, 2, 0).cpu().numpy()
-            img_np = np.clip(img_np, 0, 255).astype(np.uint8)
-            frame_bgr = cv2.cvtColor(img_np, cv2.COLOR_RGB2BGR)
+                pbar.update(1)
+                # Update progress stats
+                if frame_num % 30 == 0 and frame_num > 0:
+                    elapsed = time.time() - start_time
+                    fps_current = frame_num / elapsed
+                    eta = (frame_count - frame_num) / fps_current if fps_current > 0 else 0
+                    pbar.set_postfix({
+                        'FPS': f'{fps_current:.1f}',
+                        'ETA': f'{eta:.0f}s'
+                    })
 
-            # Write frame
-            out.write(frame_bgr)
+        # Close FFMPEG stdin and wait for it to finish
+        process.stdin.close()
+        process.wait()
 
-            # Progress update
-            if frame_idx % 30 == 0:
-                elapsed = time.time() - start_time
-                fps_actual = (frame_idx + 1) / elapsed if elapsed > 0 else 0
-                progress = (frame_idx + 1) / frame_count * 100
-                print(f"  Progress: {progress:.1f}% ({frame_idx+1}/{frame_count}) - {fps_actual:.1f} fps", end='\r')
+        # Release video manager capture
+        if self.video_manager.capture:
+            self.video_manager.capture.release()
 
-        # Clean up
-        cap.release()
-        out.release()
-        cv2.destroyAllWindows()
-
-        print("\n\nAdding audio from original video...")
-
-        # Use ffmpeg to add audio from original video
+        # Add audio back with high quality
+        print("\n🎵 Merging audio track...")
         audio_args = [
             "ffmpeg",
-            "-y", # Overwrite output file if it exists
+            '-hide_banner',
+            '-loglevel', 'error',
+            '-y',
             "-i", str(temp_file),
-            "-i", str(input_video),
-            "-c:v", "libx264",
-            "-crf", str(quality),
-            "-preset", "slow", # Better compression for better quality
+            "-i", str(video_path),
+            "-c:v", "copy",
             "-c:a", "aac",
-            "-b:a", "192k", # Higher audio bitrate
+            "-b:a", "192k",
+            "-ar", "48000",
             "-map", "0:v:0",
-            "-map", "1:a:0?",
+            "-map", "1:a:0",
+            "-movflags", "+faststart",
             "-shortest",
             str(output_file)
         ]
-        subprocess.run(audio_args, capture_output=False, text=True)
 
+        subprocess.run(audio_args, capture_output=False, text=True)
 
         # Remove temp file
         if temp_file.exists():
@@ -380,6 +356,100 @@ class RopeCLI:
         print(f"  Average FPS: {frame_count / elapsed_total:.1f}")
 
         return str(output_file)
+
+
+def swap_faces_in_frame(self, frame, frame_num):
+    """
+    Swap faces in a single frame
+
+    Args:
+        frame: The video frame (BGR format from OpenCV)
+        frame_num: Frame number for tracking
+
+    Returns:
+        Processed frame with swapped faces
+    """
+    # Convert BGR to RGB for processing
+    frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+
+    # Detect faces in current frame
+    faces = self.models.analyze_frame(frame_rgb)
+
+    if not faces:
+        # No faces detected in this frame, return original
+        return frame
+
+    # Process each detected face
+    for face in faces:
+        try:
+            # Find the best matching target face from our found_faces
+            best_match_idx = -1
+            best_similarity = -1
+
+            # Extract embedding for current face
+            current_embedding = self.models.get_embedding_from_face(frame_rgb, face)
+
+            # Find best matching target face
+            for idx, target_face in enumerate(self.found_faces):
+                similarity = self.findCosineDistance(current_embedding, target_face['embedding'])
+                if similarity > best_similarity and similarity > 0.5:  # Threshold for matching
+                    best_similarity = similarity
+                    best_match_idx = idx
+
+            if best_match_idx >= 0:
+                # We found a matching face to swap
+                # Use the average of source embeddings for swapping
+                if self.source_embeddings:
+                    # Calculate average embedding from all source faces
+                    avg_embedding = np.mean(self.source_embeddings, axis=0)
+
+                    # Perform the face swap
+                    swapped_face = self.models.run_swapper(
+                        frame_rgb,
+                        face,
+                        avg_embedding
+                    )
+
+                    # Blend the swapped face back into the frame
+                    frame_rgb = self.models.blend_face(
+                        frame_rgb,
+                        swapped_face,
+                        face
+                    )
+
+        except Exception as e:
+            print(f"  Warning: Could not swap face {face.get('index', 'unknown')}: {e}")
+            continue
+
+    # Convert back to BGR for OpenCV/FFMPEG
+    return cv2.cvtColor(frame_rgb, cv2.COLOR_RGB2BGR)
+
+
+# Alternative simpler implementation that uses video_manager directly
+def swap_faces_in_frame_simple(self, frame, frame_num):
+    """
+    Simpler version that delegates to video_manager's swap logic
+    """
+    # Set up video manager state for this frame
+    self.video_manager.target_media = [None, str(self.current_video_path)]
+    self.video_manager.current_frame = frame_num
+
+    # Assign found faces to video manager
+    self.video_manager.assign_found_faces(self.found_faces)
+
+    # Convert frame to RGB
+    frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+
+    # Apply swapping through video manager
+    try:
+        # The video_manager expects RGB input and returns RGB output
+        swapped_frame = self.video_manager.swap_video(frame_rgb, frame_num, marker=False)
+
+        # Convert back to BGR for OpenCV
+        return cv2.cvtColor(swapped_frame, cv2.COLOR_RGB2BGR)
+    except Exception as e:
+        print(f"  Warning: Frame {frame_num} swap failed: {e}")
+        return frame
 
 
 def main():

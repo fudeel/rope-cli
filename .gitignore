@@ -4,6 +4,7 @@ models
 videos
 faces
 output
+outputs
 ../videos
 ../faces
 ../output
