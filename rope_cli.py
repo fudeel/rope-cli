@@ -162,14 +162,14 @@ class RopeCLI:
                 # Check if this face is already found
                 found = False
                 for existing_face in self.found_faces:
-                    if self.findCosineDistance(existing_face['embedding'], face_emb) >= threshold:
+                    if self.findCosineDistance(existing_face['Embedding'], face_emb) >= threshold:
                         found = True
                         break
 
                 # If new face, add to found faces
                 if not found:
                     self.found_faces.append({
-                        'embedding': face_emb,
+                        'Embedding': face_emb,
                         'kps': face_kps
                     })
 
@@ -218,7 +218,9 @@ class RopeCLI:
         for i, face in enumerate(self.found_faces):
             # Assign average of source embeddings to each target face
             if self.source_embeddings:
-                face['AssignedEmbedding'] = np.mean(self.source_embeddings, axis=0)
+                # FIX: Extract only the embedding arrays for np.mean
+                embeddings_list = [d['embedding'] for d in self.source_embeddings]
+                face['AssignedEmbedding'] = np.mean(embeddings_list, axis=0)
                 face['SourceFaceAssignments'] = list(range(len(self.source_embeddings)))
 
         self.video_manager.assign_found_faces(self.found_faces)
@@ -234,19 +236,54 @@ class RopeCLI:
         # Set parameters for swapping
         self.video_manager.parameters = {
             'SwapFacesButton': True,
-            'StrengthSlider': 1.0,
+            'StrengthSlider': 100,
             'ThreadsSlider': threads,
-            'NumFacesSlider': 5,
-            'FaceSearchSlider': 0.6,
-            'MaskViewButton': False,
-            'CLIP_text': '',
+            'DetectTypeTextSel': 'Retinaface',
+            'DetectScoreSlider': 50,
+            'ThresholdSlider': 55,
+            'OrientSwitch': False,
+            'OrientSlider': 0,
+            'RestorerSwitch': False,
+            'RestorerTypeTextSel': 'GFPGAN',
+            'RestorerDetTypeTextSel': 'Blend',
+            'RestorerSlider': 100,
+            'StrengthSwitch': False,
+            'BorderTopSlider': 10,
+            'BorderSidesSlider': 10,
+            'BorderBottomSlider': 10,
+            'BorderBlurSlider': 10,
+            'BlendSlider': 5,
+            'ColorSwitch': False,
+            'ColorRedSlider': 0,
+            'ColorGreenSlider': 0,
+            'ColorBlueSlider': 0,
+            'ColorGammaSlider': 1.0,
+            'FaceAdjSwitch': False,
+            'KPSXSlider': 0,
+            'KPSYSlider': 0,
+            'KPSScaleSlider': 0,
+            'FaceScaleSlider': 0,
+            'DiffSwitch': False,
+            'DiffSlider': 4,
+            'OccluderSwitch': False,
+            'OccluderSlider': 0,
+            'FaceParserSwitch': False,
+            'FaceParserSlider': 0,
+            'MouthParserSlider': 0,
             'CLIPSwitch': False,
-            'MergeTextSel': 'Mean'
+            'CLIPTextEntry': '',
+            'CLIPSlider': 50,
+            'SwapperTypeTextSel': '128',
+            'RecordTypeTextSel': 'FFMPEG',
+            'VideoQualSlider': quality,
+            'MergeTextSel': 'Mean',
         }
+
 
         self.video_manager.control = {
             'SwapFacesButton': True,
-            'AudioButton': False
+            'AudioButton': False,
+            'MaskViewButton': False
         }
 
         # Create FFMPEG process for output with enhanced quality
@@ -291,7 +328,7 @@ class RopeCLI:
 
                 try:
                     # Apply face swapping using video manager's swap logic
-                    swapped_frame = self.video_manager.swap_video(frame_rgb, frame_num, marker=False)
+                    swapped_frame = self.video_manager.swap_video(frame_rgb, frame_num, use_markers=False)
 
                     # Convert RGB back to BGR for FFMPEG
                     output_frame = cv2.cvtColor(swapped_frame, cv2.COLOR_RGB2BGR)
@@ -391,7 +428,7 @@ def swap_faces_in_frame(self, frame, frame_num):
 
             # Find best matching target face
             for idx, target_face in enumerate(self.found_faces):
-                similarity = self.findCosineDistance(current_embedding, target_face['embedding'])
+                similarity = self.findCosineDistance(current_embedding, target_face['Embedding'])
                 if similarity > best_similarity and similarity > 0.5:  # Threshold for matching
                     best_similarity = similarity
                     best_match_idx = idx
@@ -401,7 +438,9 @@ def swap_faces_in_frame(self, frame, frame_num):
                 # Use the average of source embeddings for swapping
                 if self.source_embeddings:
                     # Calculate average embedding from all source faces
-                    avg_embedding = np.mean(self.source_embeddings, axis=0)
+                    # FIX: Extract only the embedding arrays for np.mean
+                    embeddings_list = [d['embedding'] for d in self.source_embeddings]
+                    avg_embedding = np.mean(embeddings_list, axis=0)
 
                     # Perform the face swap
                     swapped_face = self.models.run_swapper(
@@ -443,7 +482,7 @@ def swap_faces_in_frame_simple(self, frame, frame_num):
     # Apply swapping through video manager
     try:
         # The video_manager expects RGB input and returns RGB output
-        swapped_frame = self.video_manager.swap_video(frame_rgb, frame_num, marker=False)
+        swapped_frame = self.video_manager.swap_video(frame_rgb, frame_num, use_markers=False)
 
         # Convert back to BGR for OpenCV
         return cv2.cvtColor(swapped_frame, cv2.COLOR_RGB2BGR)
