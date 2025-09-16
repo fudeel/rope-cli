@@ -79,12 +79,15 @@ async def process_video_worker():
             # Update status
             processing_status[job_id]['status'] = 'processing'
             processing_status[job_id]['message'] = 'Starting video processing...'
-            processing_status[job_id]['progress'] = 5.0
+            processing_status[job_id]['progress'] = 0.0
 
             # Notify websockets if connected
             await notify_websockets(job_id, processing_status[job_id])
 
             try:
+                # Get the running event loop from the main thread before starting the executor
+                main_loop = asyncio.get_running_loop()
+
                 # Create progress callback for real-time updates
                 async def progress_callback(progress: float, message: str):
                     """Callback to update progress through WebSocket"""
@@ -92,21 +95,21 @@ async def process_video_worker():
                     processing_status[job_id]['message'] = message
                     await notify_websockets(job_id, processing_status[job_id])
                     # Small delay to prevent flooding
-                    await asyncio.sleep(0.1)
+                    await asyncio.sleep(0.05)
 
-                # Create CLI instance with progress callback
-                print("📦 Initializing Rope CLI with progress tracking...")
-
-                # We need to wrap the async callback for sync usage
+                # Create a thread-safe wrapper for the async progress callback
                 def sync_progress_wrapper(progress: float, message: str):
-                    """Sync wrapper for async progress callback"""
-                    try:
-                        # Create a new event loop task for the async callback
-                        loop = asyncio.get_event_loop()
-                        loop.create_task(progress_callback(progress, message))
-                    except Exception as e:
-                        print(f"Progress update error: {e}")
+                    """
+                    Sync wrapper that safely calls the async progress callback
+                    from a different thread.
+                    """
+                    asyncio.run_coroutine_threadsafe(
+                        progress_callback(progress, message),
+                        main_loop
+                    )
 
+                # Create CLI instance with the thread-safe progress callback
+                print("📦 Initializing Rope CLI with progress tracking...")
                 cli = RopeCLI(progress_callback=sync_progress_wrapper)
 
                 # Load faces
@@ -127,16 +130,17 @@ async def process_video_worker():
 
                 # Process video with progress callback
                 print(f"🎥 Processing video with deepfake (main actor only)...")
-                output_file = await asyncio.get_event_loop().run_in_executor(
-                    None,
+                # Run the blocking `process_video` function in a separate thread
+                output_file = await main_loop.run_in_executor(
+                    None,  # Use default ThreadPoolExecutor
                     cli.process_video,
                     str(video_path),
                     str(OUTPUT_DIR),
                     job.get('quality', 14),
                     job.get('threads', 4),
                     job.get('codec', 'libx264'),
-                    job.get('preset', 'slow'),
-                    sync_progress_wrapper
+                    job.get('preset', 'slow')
+                    # We don't need to pass the callback here since it's set during CLI initialization
                 )
 
                 # Update status to completed

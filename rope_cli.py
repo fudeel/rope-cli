@@ -77,7 +77,8 @@ class RopeCLI:
             raise ValueError(f"Faces directory does not exist: {faces_dir}")
 
         print(f"Loading source faces from: {faces_dir}")
-        self.update_progress(10, "Loading source faces...")
+        # Progress: 0% - 10%
+        self.update_progress(0, "Loading source faces...")
 
         # Get all image files
         image_extensions = ('.jpg', '.jpeg', '.png', '.bmp', '.tiff')
@@ -129,14 +130,14 @@ class RopeCLI:
                 print(f"    Warning: No face detected in {face_file.name}")
 
             # Update progress
-            progress = 10 + (10 * (idx + 1) / len(face_files))
+            progress = 0 + (10 * (idx + 1) / len(face_files))
             self.update_progress(progress, f"Loaded {idx + 1}/{len(face_files)} faces")
 
         if not self.source_embeddings:
             raise ValueError("No valid faces found in source images")
 
         print(f"Successfully loaded {len(self.source_embeddings)} face embeddings")
-        self.update_progress(20, f"Loaded {len(self.source_embeddings)} source faces")
+        self.update_progress(10, f"Loaded {len(self.source_embeddings)} source faces")
 
     def find_faces_in_video(self, video_path):
         """
@@ -153,7 +154,8 @@ class RopeCLI:
             raise ValueError(f"Video file does not exist: {video_path}")
 
         print(f"\n🔍 Analyzing video for faces: {video_path.name}")
-        self.update_progress(25, "Analyzing video for faces...")
+        # Progress: 10% - 20%
+        self.update_progress(10, "Analyzing video for faces...")
 
         # Open video
         cap = cv2.VideoCapture(str(video_path))
@@ -228,7 +230,7 @@ class RopeCLI:
                     face_sizes.append([face_area])
 
             # Update progress
-            progress = 25 + (10 * frames_analyzed / (max_frames_to_analyze / sample_interval))
+            progress = 10 + (10 * frames_analyzed / (max_frames_to_analyze / sample_interval))
             self.update_progress(progress, f"Analyzing faces... ({frames_analyzed} samples)")
 
         cap.release()
@@ -267,11 +269,11 @@ class RopeCLI:
             # Assign found faces to video manager
             self.video_manager.assign_found_faces(self.found_faces)
 
-            self.update_progress(35, f"Identified main actor from {len(self.found_faces)} faces")
+            self.update_progress(20, f"Identified main actor from {len(self.found_faces)} faces")
             return len(self.found_faces)
         else:
             print("  No faces found in video")
-            self.update_progress(35, "No faces found in video")
+            self.update_progress(20, "No faces found in video")
             return 0
 
     def process_video(self, video_path, output_dir, quality=14, threads=2, codec='libx264', preset='slow', progress_callback=None):
@@ -297,7 +299,8 @@ class RopeCLI:
         print(f"  Quality: CRF={quality} (lower=better)")
         print(f"  Main actor face will be swapped")
 
-        self.update_progress(40, "Setting up video processing...")
+        # Progress: 20%
+        self.update_progress(20, "Setting up video processing...")
 
         # Set up video manager for processing
         self.video_manager.load_target_video(str(video_path))
@@ -391,7 +394,8 @@ class RopeCLI:
 
         # Process frames
         print("\nProcessing frames (swapping main actor only)...")
-        self.update_progress(45, "Processing video frames...")
+        # Progress: 21% - 95%
+        self.update_progress(21, "Processing video frames...")
         start_time = time.time()
 
         with tqdm(total=frame_count, desc="Deepfaking", unit="frames") as pbar:
@@ -424,8 +428,8 @@ class RopeCLI:
 
                 pbar.update(1)
 
-                # Update progress through callback
-                video_progress = 45 + (45 * (frame_num + 1) / frame_count)
+                # Update progress through callback (21% to 95%)
+                video_progress = 21 + (74 * (frame_num + 1) / frame_count)
                 if frame_num % 10 == 0:  # Update every 10 frames to avoid too many updates
                     self.update_progress(video_progress, f"Processing frame {frame_num + 1}/{frame_count}")
 
@@ -447,7 +451,8 @@ class RopeCLI:
         if self.video_manager.capture:
             self.video_manager.capture.release()
 
-        self.update_progress(92, "Adding audio track...")
+        # Progress: 95%
+        self.update_progress(95, "Adding audio track...")
 
         # Add audio back with high quality
         print("\n🎵 Merging audio track...")
@@ -481,6 +486,7 @@ class RopeCLI:
         print(f"  Total time: {elapsed_total:.1f} seconds")
         print(f"  Average FPS: {frame_count / elapsed_total:.1f}")
 
+        # Progress: 100%
         self.update_progress(100, "Processing completed successfully!")
 
         return str(output_file)
@@ -546,4 +552,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-
