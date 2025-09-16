@@ -11,12 +11,10 @@ from pathlib import Path
 import numpy as np
 import torch
 import cv2
-from math import ceil
 import torchvision
 from tqdm import tqdm
 
 torchvision.disable_beta_transforms_warning()
-from torchvision.transforms import v2
 
 # Add parent directory to path for imports
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
